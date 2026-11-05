@@ -13,6 +13,10 @@ on:
     branches:
       - CI_testing
 
+# the release step creates/updates the GitHub release of the tag
+permissions:
+  contents: write
+
 jobs:
   package:
     name: Build and package (Windows MSVC)
