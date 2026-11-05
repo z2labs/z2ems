@@ -1,0 +1,18 @@
+[submodule "fparser"]
+	path = fparser
+	url = https://github.com/thliebig/fparser.git
+[submodule "CSXCAD"]
+	path = CSXCAD
+	url = https://github.com/z2labs/z2ems-CSXCAD.git
+[submodule "openEMS"]
+	path = openEMS
+	url = https://github.com/z2labs/z2ems-openEMS.git
+[submodule "QCSXCAD"]
+	path = QCSXCAD
+	url = https://github.com/thliebig/QCSXCAD.git
+[submodule "AppCSXCAD"]
+	path = AppCSXCAD
+	url = https://github.com/thliebig/AppCSXCAD.git
+[submodule "CTB"]
+	path = CTB
+	url = https://github.com/thliebig/CTB.git

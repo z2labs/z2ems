@@ -1,0 +1,1953 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+</head>
+<body>
+<title>z2labs Board Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Saira+Semi+Condensed:wght@500;600&display=swap">
+<style>
+/* Layout: full-height 3D bench with a right-hand inspector (bottom sheet on phones). */
+:root {
+  --bg: #eef1ef;          /* page ground, faint green bias toward solder mask */
+  --panel: #fbfcfb;
+  --fg: #1c2622;
+  --muted: #5d6b65;
+  --line: #d3dbd7;
+  --accent: #b5652a;      /* copper */
+  --accent-fg: #ffffff;
+  --canvas: #dfe5e2;
+  --sel: #0c7a6b;
+  --warn: #9a6400;
+  --font-display: "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --panel-w: 340px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --panel: #151d1a; --fg: #e3ebe7; --muted: #93a39c; --line: #2a3632;
+    --accent: #e08a4a; --accent-fg: #1a0f07; --canvas: #0d1311; --sel: #3cc8b0; --warn: #e3a948; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --panel: #151d1a; --fg: #e3ebe7; --muted: #93a39c; --line: #2a3632;
+  --accent: #e08a4a; --accent-fg: #1a0f07; --canvas: #0d1311; --sel: #3cc8b0; --warn: #e3a948; color-scheme: dark;
+}
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; overflow: hidden; }
+.app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) var(--panel-w); }
+.stage { position: relative; min-width: 0; background: var(--canvas); }
+.stage canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+.hud { position: absolute; left: 16px; top: 12px; right: 16px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+.chip { font-family: var(--font-data); font-size: 11px; letter-spacing: .02em; padding: 3px 8px; border-radius: 4px; background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
+.chip.warn { color: #8a5a00; background: #fff4d6; border-color: #e8b84a; font-weight: 600; cursor: help; }
+.views { position: absolute; left: 16px; bottom: 16px; display: flex; gap: 4px; flex-wrap: wrap; }
+.btn { font: 500 12px var(--font-body); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 6px 10px; cursor: pointer; }
+.btn:hover { border-color: var(--accent); }
+.btn:focus-visible, input:focus-visible, .row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn.small { padding: 3px 7px; font-size: 11px; }
+.side { background: var(--panel); border-left: 1px solid var(--line); overflow-y: auto; display: flex; flex-direction: column; min-width: 0; }
+.sec { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.sec h2 { margin: 0; font: 600 12px var(--font-display); letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+.title { font: 600 20px/1.15 var(--font-display); margin: 0; text-wrap: balance; overflow-wrap: anywhere; }
+.meta { font-family: var(--font-data); font-size: 11.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.ctl { display: grid; grid-template-columns: 74px minmax(0, 1fr) 54px; gap: 8px; align-items: center; }
+.ctl label { font-size: 12px; color: var(--muted); }
+.ctl output { font-family: var(--font-data); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.seg { display: flex; gap: 4px; flex-wrap: wrap; }
+.xsec { width: 100%; height: 64px; display: block; border-radius: 3px; }
+.layers { display: flex; flex-direction: column; }
+.tag { margin-left: auto; font-size: 10px; padding: 1px 5px; border-radius: 8px; background: var(--chip, #8884); opacity: .85; }
+.row { display: grid; grid-template-columns: 18px 12px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 4px; border-radius: 4px; cursor: pointer; }
+.row:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.row.sel { background: color-mix(in srgb, var(--sel) 15%, transparent); }
+.row input { margin: 0; accent-color: var(--accent); }
+.sw { width: 12px; height: 12px; border-radius: 2px; border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); }
+.row .nm { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .nm small { color: var(--muted); font-size: 11px; margin-left: 4px; }
+.row .th { font-family: var(--font-data); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.info { font-size: 13px; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
+.info dt { color: var(--muted); }
+.info dd { margin: 0; font-family: var(--font-data); font-size: 12px; overflow-wrap: anywhere; }
+.hint { font-size: 12px; color: var(--muted); line-height: 1.45; margin: 0; }
+.hint code, .info code { font-family: var(--font-data); font-size: 11px; }
+.est { color: var(--warn); }
+.drop { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in srgb, var(--canvas) 80%, transparent); border: 2px dashed var(--accent); font: 600 18px var(--font-display); color: var(--fg); }
+.status { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 24px; color: var(--muted); font-size: 13px; }
+.status b { display: block; font: 600 18px var(--font-display); color: var(--fg); margin-bottom: 6px; }
+.toggle { display: none; }
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  .side { border-left: 0; border-top: 1px solid var(--line); max-height: 46vh; }
+  .side.collapsed { max-height: 44px; overflow: hidden; }
+  .toggle { display: block; position: sticky; top: 0; z-index: 2; background: var(--panel); border: 0; border-bottom: 1px solid var(--line); width: 100%; padding: 12px 16px; text-align: left; font: 600 12px var(--font-display); letter-spacing: .09em; text-transform: uppercase; color: var(--muted); cursor: pointer; }
+}
+.field { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 6px 10px; align-items: center; font-size: 12px; }
+.field label { color: var(--muted); }
+.field input[type=number], .field select, .z0 { font: 12px var(--font-data); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box; }
+.z0 { width: 64px; padding: 2px 4px; }
+.chk { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.35; }
+.chk input { margin: 2px 0 0; accent-color: var(--accent); }
+.chk small { display: block; color: var(--muted); font-size: 11px; }
+.prog { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.prog > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+.plot { width: 100%; height: 230px; display: block; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font: 11px var(--font-data); }
+.legend label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+.legend i { width: 14px; height: 3px; display: inline-block; border-radius: 2px; }
+.portrow { grid-template-columns: 18px 12px minmax(0, 1fr) auto auto; }
+.pnum { font: 600 11px var(--font-data); color: #fff; background: #d6204e; border-radius: 3px; padding: 0 4px; }
+.mono { font-family: var(--font-data); font-size: 11.5px; }
+/* schematic pane (KiCad colours on paper, darker paper in dark mode) */
+:root { --sch-bg: #f5f4ef; --sch-wire: #008400; --sch-body: #840000; --sch-fill: #ffffc2; --sch-text: #1a1a1a; --sch-label: #0c4f8a; --sch-sheet: #8a5a00; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --sch-bg: #14191a; --sch-wire: #3fbf4f; --sch-body: #d46a6a; --sch-fill: #2a2a1c; --sch-text: #dfe6e2; --sch-label: #6fb3ef; --sch-sheet: #d9a441; } }
+:root[data-theme="dark"] { --sch-bg: #14191a; --sch-wire: #3fbf4f; --sch-body: #d46a6a; --sch-fill: #2a2a1c; --sch-text: #dfe6e2; --sch-label: #6fb3ef; --sch-sheet: #d9a441; }
+.schpane { position: absolute; inset: 0; background: var(--sch-bg); display: flex; flex-direction: column; }
+.schbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 44px 16px 8px; }
+.schbar select, .schbar input { font: 12px var(--font-data); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; min-width: 0; }
+.schbar input { width: 150px; }
+#sch { flex: 1; width: 100%; min-height: 0; touch-action: none; cursor: grab; display: block; }
+#sch.marking { cursor: crosshair; }
+#sch .w { stroke: var(--sch-wire); stroke-width: .15; fill: none; stroke-linecap: round; }
+#sch .bus { stroke: #2c5fb3; stroke-width: .5; fill: none; }
+#sch .b { stroke: var(--sch-body); stroke-width: .15; fill: none; stroke-linejoin: round; }
+#sch .b.bg { fill: var(--sch-fill); }
+#sch .b.ol { fill: var(--sch-body); }
+#sch .pn { stroke: var(--sch-body); stroke-width: .15; }
+#sch .pnum { font-size: .9px; fill: var(--sch-body); }
+#sch text { fill: var(--sch-text); font-family: var(--font-data); white-space: pre; }
+#sch .lab text { fill: var(--sch-label); }
+#sch .lab path { stroke: var(--sch-label); stroke-width: .15; fill: none; }
+#sch .box rect { stroke: var(--sch-sheet); stroke-width: .2; fill: color-mix(in srgb, var(--sch-sheet) 6%, transparent); cursor: pointer; }
+#sch .box text { fill: var(--sch-sheet); }
+#sch .jn { fill: var(--sch-wire); }
+#sch .sym { cursor: pointer; }
+#sch .sym:hover .b { stroke-width: .3; }
+#sch .pin-hit { stroke: transparent; stroke-width: 1.2; cursor: pointer; }
+#sch .w-hit { stroke: transparent; stroke-width: 1.2; fill: none; cursor: pointer; }
+#sch .hl, #sch .hl .b, #sch .hl .pn { stroke: var(--sel) !important; stroke-width: .45 !important; }
+#sch .hlsym .b { stroke: var(--sel) !important; stroke-width: .4 !important; }
+#sch .grp { stroke: #d6204e !important; stroke-width: .5 !important; }
+#sch .markA { stroke: #d6204e !important; stroke-width: .8 !important; }
+.mode { display: flex; gap: 0; }
+.mode .btn { border-radius: 0; }
+.mode .btn:first-child { border-radius: 5px 0 0 5px; }
+.mode .btn:last-child { border-radius: 0 5px 5px 0; }
+.cohg { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; padding: 5px 4px; border-radius: 4px; cursor: pointer; font-size: 12.5px; }
+.cohg:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.cohg.sel { background: color-mix(in srgb, var(--sel) 15%, transparent); }
+.cohg small { color: var(--muted); display: block; font-size: 11px; }
+.verdict { font: 600 10.5px var(--font-data); padding: 1px 6px; border-radius: 8px; color: #fff; }
+.verdict.ok { background: #2f8f4e; } .verdict.bad { background: #c0392b; } .verdict.warn { background: #b07a12; }
+.cohtab { width: 100%; border-collapse: collapse; font: 11.5px var(--font-data); font-variant-numeric: tabular-nums; }
+.cohtab th, .cohtab td { padding: 2px 4px; text-align: right; border-bottom: 1px solid var(--line); }
+.cohtab th:first-child, .cohtab td:first-child { text-align: left; }
+.cohtab th { color: var(--muted); font-weight: 500; }
+.hops { font: 11px var(--font-data); display: flex; flex-direction: column; gap: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="app">
+  <div class="stage" id="stage">
+    <canvas id="cv" tabindex="0" aria-label="3D view of the board"></canvas>
+    <div class="hud">
+      <div class="mode" role="group" aria-label="View"><button class="btn small on" id="mode3d">3D</button><button class="btn small" id="modeSch" disabled title="Schematic of the board's project (needs the local twin and the .kicad_sch files next to the board)">Schematic</button></div>
+      <span class="chip" id="rend">starting renderer</span>
+      <span class="chip" id="stats"></span>
+      <span class="chip warn" id="illus" hidden title="The 3D models of the parts are shown to recognise them. The simulation does not use them: it meshes the simplified bodies drawn in cyan (Simulation geometry).">⚠ 3D models: illustration only, not simulated</span>
+    </div>
+    <div class="views" role="group" aria-label="Camera">
+      <button class="btn" data-view="iso">Iso</button>
+      <button class="btn" data-view="top">Top</button>
+      <button class="btn" data-view="bottom">Bottom</button>
+      <button class="btn" data-view="side">Cross-section</button>
+    </div>
+    <div class="schpane" id="schpane" hidden>
+      <div class="schbar">
+        <button class="btn small" id="schUp" title="Parent sheet">Up</button>
+        <select id="schSheet" aria-label="Sheet"></select>
+        <button class="btn small" id="schFit">Fit</button>
+        <input id="schFind" placeholder="find ref or net" aria-label="Find a reference or net" list="schFindList"><datalist id="schFindList"></datalist>
+        <span class="chip" id="schInfo"></span>
+      </div>
+      <svg id="sch" xmlns="http://www.w3.org/2000/svg" aria-label="Schematic"></svg>
+    </div>
+    <div class="status" id="status"><div><b>Loading board</b>Reading the sample board data</div></div>
+    <div class="drop" id="drop" hidden>Drop a .kicad_pcb (with its .kicad_sch files for the schematic) or a .z2v.json</div>
+  </div>
+
+  <aside class="side" id="side">
+    <button class="toggle" id="sheet" aria-expanded="true">Inspector</button>
+    <section class="sec">
+      <h1 class="title" id="bname">Board</h1>
+      <div class="meta" id="bmeta"></div>
+    </section>
+
+    <section class="sec">
+      <h2>Explode</h2>
+      <div class="ctl"><label for="explode">Separation</label><input type="range" id="explode" min="0" max="1" step="0.01" value="0.45"><output id="explodeV"></output></div>
+      <div class="ctl"><label for="zscale">Z scale</label><input type="range" id="zscale" min="0" max="1.3" step="0.01" value="0.5"><output id="zscaleV"></output></div>
+      <p class="hint">Layer thicknesses keep their true ratios at every Z scale. Components are drawn at true height.</p>
+    </section>
+
+    <section class="sec">
+      <h2>Components</h2>
+      <div class="seg" role="group" aria-label="Components shown">
+        <button class="btn small on" data-comp="all">All</button>
+        <button class="btn small" data-comp="F">Top</button>
+        <button class="btn small" data-comp="B">Bottom</button>
+        <button class="btn small" data-comp="none">None</button>
+      </div>
+      <div class="seg">
+        <button class="btn small" id="hideSel" disabled>Hide selected</button>
+        <button class="btn small" id="showAll" disabled>Show hidden (0)</button>
+        <button class="btn small" id="barrels">Hole barrels</button>
+      </div>
+      <div class="seg" id="geoSeg" role="group" aria-label="Part bodies shown" hidden>
+        <button class="btn small" data-geo="model" title="Vendor / library 3D models: illustration only, not simulated">⚠ 3D model</button>
+        <button class="btn small" data-geo="sim" title="The bodies the simulation meshes (metal: cyan, dielectric: violet)">Simulated</button>
+        <button class="btn small on" data-geo="both">Both</button>
+      </div>
+      <p class="hint" id="geoHint" hidden></p>
+    </section>
+
+    <section class="sec">
+      <h2>Stackup</h2>
+      <canvas class="xsec" id="xsec" aria-label="Board cross-section to scale"></canvas>
+      <div class="layers" id="layers"></div>
+    </section>
+
+    <section class="sec">
+      <h2>RF ports</h2>
+      <p class="hint" id="portHint">Suggestions from the connectors, net names and net classes of the board. Ticked ones go into the simulation; nothing is forced.</p>
+      <div class="layers" id="ports"></div>
+      <div class="seg">
+        <button class="btn small" id="snapPort" disabled title="Click near a pad in the view: the port snaps to the pad edge that faces the board edge">Add port by click</button>
+        <button class="btn small" id="copyPorts" disabled title="Copy the kicad_sim.py command line">Copy command</button>
+      </div>
+      <p class="hint">Port numbers follow the list order; drag a port marker onto another pad to move it. Z0 is the reference impedance of the port (default 50 Ω).</p>
+    </section>
+
+    <section class="sec" id="cohSec" hidden>
+      <h2>Phase match</h2>
+      <p class="hint">Channel paths pad to pad on the copper, delay with the εeff of each layer. <b>absolute</b>: before the calibration point, the phase at f0 must match. <b>delay</b>: calibrated at one frequency, the delay spread sets the phase error across the band.</p>
+      <div class="field">
+        <label for="cohF0">f0 (GHz)</label><input type="number" id="cohF0" step="0.001" min="0.001">
+        <label for="cohTol">tolerance (°)</label><input type="number" id="cohTol" step="0.1" min="0.01">
+      </div>
+      <div class="layers" id="cohGroups"></div>
+      <div id="cohDetail"></div>
+      <p class="hint est" id="cohNote" hidden></p>
+      <div class="seg">
+        <button class="btn small" id="cohMark" title="Click two pins of the same net in the schematic: one hop. Hops of a channel add up.">Mark path</button>
+        <button class="btn small" id="cohRun">Recompute</button>
+      </div>
+      <div id="cohEdit" hidden>
+        <div class="field">
+          <label for="cohGrp">Group</label><select id="cohGrp"></select>
+          <label for="cohNew">New group</label><input id="cohNew" placeholder="name, Enter" class="z0" style="width:100%">
+          <label for="cohKind">Kind</label><select id="cohKind"><option value="absolute">absolute (before calibration)</option><option value="delay">delay (calibrated)</option></select>
+          <label for="cohBand">band (MHz)</label><input type="number" id="cohBand" step="0.1" min="0.001">
+          <label for="cohCh">Channel</label><select id="cohCh"></select>
+        </div>
+        <div class="hops" id="cohHops"></div>
+        <div class="seg">
+          <button class="btn small" id="cohRepeat" title="Copy this channel's hops to the other instances of the same hierarchical sheet (refs and nets follow the sheet)">Repeat on sibling sheets</button>
+          <button class="btn small" id="cohUndo">Undo hop</button>
+          <button class="btn small" id="cohDelGrp">Delete group</button>
+        </div>
+        <p class="hint" id="cohMarkHint">Schematic: click the first pin, then the second pin on the same net.</p>
+      </div>
+    </section>
+
+    <section class="sec" id="simSec">
+      <h2>Simulate</h2>
+      <p class="hint" id="simHint">Runs need the local twin: <code>python gui/server/z2twin_server.py &lt;board folder&gt; --open</code></p>
+      <div class="field">
+        <label for="simFab">Stackup</label><select id="simFab"></select>
+        <label for="simFmax">f max</label><select id="simFmax"><option value="3e9">3 GHz</option><option value="6e9" selected>6 GHz</option><option value="10e9">10 GHz</option><option value="20e9">20 GHz</option></select>
+        <label for="simMesh">Mesh</label><select id="simMesh"><option value="1.6">Fast (coarse)</option><option value="1" selected>Normal</option><option value="0.7">Fine</option></select>
+        <label for="simEng">Engine</label><select id="simEng"><option value="auto" selected>Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
+      </div>
+      <label class="chk"><input type="checkbox" id="simConv"><span>Mesh convergence check<small>Runs the board again with 0.6× cells and reports whether f<sub>res</sub>, delay and |S| moved (≈ 3× the time).</small></span></label>
+      <label class="chk"><input type="checkbox" id="simDisp" checked><span>Laminate dispersion<small>Djordjevic–Sarkar: flat tan δ, causal εr(f). Slower (Debye poles).</small></span></label>
+      <label class="chk"><input type="checkbox" id="simLoss" checked><span>Copper loss and roughness<small id="simLossNote">Rq from the fab stackup; standard ED foil ≈ 2 µm.</small></span></label>
+      <div class="field"><label for="simRq">Rq override</label><input type="number" id="simRq" min="0" max="10" step="0.1" placeholder="from stackup (µm)"></div>
+      <label class="chk"><input type="checkbox" id="simComp"><span>Fitted R, L, C as lumped elements<small id="simCompNote">no two-pad passives with a value</small></span></label>
+      <div class="seg"><button class="btn" id="runSim" disabled>Run simulation</button><button class="btn small" id="cancelSim" hidden>Cancel</button></div>
+      <div id="simProg" hidden><div class="prog"><i id="simBar"></i></div><p class="hint mono" id="simText"></p></div>
+    </section>
+
+    <section class="sec" id="resSec" hidden>
+      <h2>Result</h2>
+      <div class="seg" role="group" aria-label="Plot">
+        <button class="btn small on" data-plot="db">|S| dB</button>
+        <button class="btn small" data-plot="smith">Smith</button>
+        <button class="btn small" data-plot="tdr">TDR</button>
+        <button class="btn small" data-plot="phase">Phase</button>
+      </div>
+      <canvas class="plot" id="plot" aria-label="S-parameter plot"></canvas>
+      <div class="legend" id="legend"></div>
+      <div class="seg" id="fieldCtl" hidden><button class="btn small" id="fieldBtn" title="Current density on every copper layer, shown on the layers in the 3D view">Current map</button><select id="fieldF" class="z0" style="width:auto" aria-label="Frequency of the current map"></select></div>
+      <p class="hint" id="fieldNote" hidden>|J| of the port-1 excitation, dB relative to the strongest current on any layer (black: −40 dB or less). Hide layers to look at the inner planes.</p>
+      <dl class="info" id="resInfo"></dl>
+      <div class="seg"><a class="btn small" id="dlTouch" download hidden>Download Touchstone</a><select id="runsSel" class="z0" style="width:auto" hidden></select></div>
+    </section>
+
+    <section class="sec">
+      <h2>Selection</h2>
+      <dl class="info" id="info"><dt>Click</dt><dd>a layer, track, via or component</dd></dl>
+      <div class="seg"><button class="btn small" id="clearNet" hidden>Clear net highlight</button></div>
+    </section>
+
+    <section class="sec">
+      <h2>Open a board</h2>
+      <div class="field" id="srvBoards" hidden><label for="boardSel">Folder</label><select id="boardSel"></select></div>
+      <div class="seg"><label class="btn small" for="file">Open board file</label><input type="file" id="file" accept=".kicad_pcb,.kicad_sch,.kicad_pro,.json" multiple hidden></div>
+      <p class="hint">A <code>.kicad_pcb</code> is imported right here in the browser (the first time this loads about 20 MB of Python). A <code>.z2v.json</code> from <code>gui/tools/kicad2view.py</code> opens instantly. Or drop either file on the view.</p>
+      <div class="seg" id="samples"><span class="hint">Samples:</span>
+        <button class="btn small" data-sample="coupon30_air_launch.z2v.json">SMA air launch (coupon 30)</button>
+        <button class="btn small" data-sample="coupon01_T0.z2v.json">SMA compensated T0 (coupon 1)</button>
+        <button class="btn small" data-sample="esp32_poe.z2v.json">ESP32-PoE</button>
+      </div>
+    </section>
+  </aside>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.webgpu.min.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ---------------------------------------------------------------- colours
+// KiCad's default copper colours, so a KiCad user recognises the layers at a glance.
+const CU_COLORS = ['#c83434', '#7fc87f', '#ce7d2c', '#4fcbcb', '#db628b', '#a7a59a', '#8c99d6', '#c8a26c',
+                   '#2fa83a', '#d4b440', '#3e96d2', '#a03cbf', '#4d7fc4'];
+function copperColor(i, n) { return i === n - 1 ? '#4d7fc4' : CU_COLORS[i % (CU_COLORS.length - 1)]; }
+const DIEL = { core: '#c9b35e', prepreg: '#b3c26a' };
+const MASK = '#1f7a45';
+const BARREL = '#d9a441';
+function compColor(ref, lib) {
+  const p = ref.replace(/[^A-Za-z].*$/, '').toUpperCase();
+  if (/^(C)$/.test(p)) return '#b9a57a';
+  if (/^(R|RM|RN)$/.test(p)) return '#2b2b2b';
+  if (/^(L|FB)$/.test(p)) return '#4a4f55';
+  if (/^(J|P|CN|CON|USB|LAN|UEXT|EXT|X)/.test(p) || /CONN|USB|RJ|HDR|HEADER/i.test(lib)) return '#b9bec4';
+  if (/^(D|LED|TVS|Z)/.test(p)) return '#343434';
+  if (/^(Y|Q|XTAL)/.test(p)) return '#9aa1a8';
+  return '#1d1f22';
+}
+
+// ---------------------------------------------------------------- renderer
+const canvas = $('cv');
+const renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+await renderer.init();
+$('rend').textContent = renderer.backend && renderer.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL 2 fallback';
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 10000);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445048, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-0.6, 1, 0.8); scene.add(sun);
+const fill = new THREE.DirectionalLight(0xffffff, 0.7); fill.position.set(0.7, -0.4, -0.6); scene.add(fill);
+
+function applyTheme() { scene.background = new THREE.Color(css('--canvas') || '#dfe5e2'); drawXsec(); }
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+
+function resize() {
+  const r = canvas.parentElement.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / Math.max(r.height, 1); camera.updateProjectionMatrix();
+}
+new ResizeObserver(() => { resize(); try { wake(4); } catch { /* before the render loop is set up */ } }).observe(canvas.parentElement);
+
+// ---------------------------------------------------------------- data decoding
+function dec(b64, Type) {
+  if (!b64) return new Type(0);
+  const s = atob(b64), u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  return new Type(u.buffer);
+}
+
+// A slab of unit thickness (z 0..1): top and bottom faces from the triangles, walls from the rings.
+// The z scale of the mesh sets the physical (scaled) thickness. net[] holds the net of every vertex.
+function slab(tris, rings, ringLen, triNet, ringNet) {
+  const nT = tris.length / 6;
+  let nE = 0; for (const n of ringLen) nE += n;
+  const nV = nT * 6 + nE * 6;
+  const pos = new Float32Array(nV * 3), nor = new Float32Array(nV * 3), net = triNet ? new Uint32Array(nV) : null;
+  let v = 0;
+  const put = (x, y, z, nx, ny, nz, n) => { pos[v * 3] = x; pos[v * 3 + 1] = y; pos[v * 3 + 2] = z; nor[v * 3] = nx; nor[v * 3 + 1] = ny; nor[v * 3 + 2] = nz; if (net) net[v] = n; v++; };
+  for (let t = 0; t < nT; t++) {
+    const o = t * 6, n = triNet ? triNet[t] : 0;
+    // keep counter-clockwise winding seen from outside
+    const cross = (tris[o + 2] - tris[o]) * (tris[o + 5] - tris[o + 1]) - (tris[o + 3] - tris[o + 1]) * (tris[o + 4] - tris[o]);
+    const a = 0, b = cross >= 0 ? 1 : 2, c = cross >= 0 ? 2 : 1;
+    for (const k of [a, b, c]) put(tris[o + 2 * k], tris[o + 2 * k + 1], 1, 0, 0, 1, n);
+    for (const k of [a, c, b]) put(tris[o + 2 * k], tris[o + 2 * k + 1], 0, 0, 0, -1, n);
+  }
+  let p = 0;
+  for (let r = 0; r < ringLen.length; r++) {
+    const len = ringLen[r], n = ringNet ? ringNet[r] : 0;
+    for (let i = 0; i < len; i++) {
+      const j = (i + 1) % len;
+      const ax = rings[(p + i) * 2], ay = rings[(p + i) * 2 + 1], bx = rings[(p + j) * 2], by = rings[(p + j) * 2 + 1];
+      let nx = by - ay, ny = -(bx - ax); const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+      put(ax, ay, 0, nx, ny, 0, n); put(bx, by, 0, nx, ny, 0, n); put(bx, by, 1, nx, ny, 0, n);
+      put(ax, ay, 0, nx, ny, 0, n); put(bx, by, 1, nx, ny, 0, n); put(ax, ay, 1, nx, ny, 0, n);
+    }
+    p += len;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  if (net) {
+    const col = new Float32Array(nV * 3).fill(1);
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.userData.net = net;
+  }
+  g.computeBoundingSphere();
+  return g;
+}
+
+// ---------------------------------------------------------------- model state
+let B = null;                 // board data
+const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; scene.add(root);   // board z -> world y
+const model = new THREE.Group(); root.add(model);
+let layerObjs = [];           // per stack layer: { L, mesh, visible }
+let compObjs = [];            // { C, mesh, hidden, real (3D model), base / over (model vertices, over the board) }
+let simObjs = [];             // simulation bodies from the CSX model: { S, mesh, base (true-z vertices) }
+let showModels = true, showSim = true;
+let barrels = null, barrelData = null, showBarrels = true;
+let compMode = 'all', selected = null, netSel = -1, diag = 100;
+let ports = [], portGroup = null, snapMode = false;   // RF port suggestions and their 3D markers
+
+function disposeModel() {
+  model.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+  model.clear(); layerObjs = []; compObjs = []; simObjs = []; barrels = null; selected = null; netSel = -1; ports = []; portGroup = null;
+}
+
+function mergeGeoms(gs) {           // position + color, non-indexed
+  gs = gs.map((g) => (g.index ? g.toNonIndexed() : g));
+  const n = gs.reduce((a, g) => a + g.attributes.position.count, 0);
+  const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+  let o = 0;
+  for (const g of gs) {
+    const c = g.attributes.position.count;
+    for (let i = 0; i < c; i++) {
+      pos[3 * (o + i)] = g.attributes.position.getX(i); pos[3 * (o + i) + 1] = g.attributes.position.getY(i); pos[3 * (o + i) + 2] = g.attributes.position.getZ(i);
+      col[3 * (o + i)] = g.attributes.color.getX(i); col[3 * (o + i) + 1] = g.attributes.color.getY(i); col[3 * (o + i) + 2] = g.attributes.color.getZ(i);
+    }
+    o += c;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return out;
+}
+
+function build(data) {
+  disposeModel();
+  B = data;
+  const [x0, y0, x1, y1] = B.bbox;
+  diag = Math.hypot(x1 - x0, y1 - y0);
+  model.position.set(-(x0 + x1) / 2, -(y0 + y1) / 2, 0);
+  const cuN = B.copper.length;
+  const diel = slab(dec(B.dielectric.tris, Float32Array), dec(B.dielectric.rings, Float32Array), dec(B.dielectric.ring_len, Uint32Array), null, null);
+  let ntri = 0;
+  B.stack.forEach((L, si) => {
+    let mesh = null;
+    if (L.type === 'copper') {
+      const d = B.layers[L.name];
+      if (d) {
+        const g = slab(dec(d.tris, Float32Array), dec(d.rings, Float32Array), dec(d.ring_len, Uint32Array), dec(d.tri_net, Uint32Array), dec(d.ring_net, Uint32Array));
+        const ci = B.copper.indexOf(L.name);
+        const m = new THREE.MeshStandardMaterial({ color: copperColor(ci, cuN), vertexColors: true, metalness: 0.35, roughness: 0.45, side: THREE.DoubleSide });
+        mesh = new THREE.Mesh(g, m); ntri += g.attributes.position.count / 3;
+        L.color = copperColor(ci, cuN);
+      }
+    } else if (L.type === 'core' || L.type === 'prepreg' || L.type === 'mask') {
+      const isMask = L.type === 'mask';
+      L.color = isMask ? MASK : DIEL[L.type];
+      const m = new THREE.MeshStandardMaterial({ color: L.color, transparent: true, opacity: isMask ? 0.3 : 0.32, roughness: 0.8, metalness: 0, side: THREE.DoubleSide, depthWrite: false });
+      mesh = new THREE.Mesh(diel, m); mesh.renderOrder = 2;
+    }
+    if (mesh) { mesh.userData = { kind: 'layer', si }; model.add(mesh); }
+    layerObjs.push({ L, mesh, visible: !!mesh });
+  });
+  ntri += diel.attributes.position.count / 3;
+
+  // plated barrels
+  const n = B.drills.n;
+  barrelData = { x: dec(B.drills.x, Float32Array), y: dec(B.drills.y, Float32Array), d: dec(B.drills.d, Float32Array),
+                 top: dec(B.drills.top, Uint8Array), bot: dec(B.drills.bot, Uint8Array), net: dec(B.drills.net, Uint32Array), via: dec(B.drills.via, Uint8Array) };
+  if (n) {
+    const cg = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true); cg.rotateX(Math.PI / 2); cg.translate(0, 0, 0);
+    barrels = new THREE.InstancedMesh(cg, new THREE.MeshStandardMaterial({ color: BARREL, metalness: 0.6, roughness: 0.35, side: THREE.DoubleSide }), n);
+    for (let i = 0; i < n; i++) barrels.setColorAt(i, new THREE.Color(1, 1, 1));
+    barrels.userData = { kind: 'barrel' };
+    model.add(barrels);
+  }
+
+  // components
+  const modelGeo = {};          // 3D model meshes (VRML from kicad2view), decoded once per model file
+  const getModel = (key) => {
+    if (modelGeo[key] !== undefined) return modelGeo[key];
+    const d = (B.models || {})[key];
+    if (!d) return (modelGeo[key] = null);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(dec(d.pos, Float32Array), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(Float32Array.from(dec(d.col, Uint8Array), (v) => v / 255), 3));   // WebGPU has no unorm8x3
+    g.setIndex(new THREE.BufferAttribute(dec(d.idx, Uint32Array), 1));
+    return (modelGeo[key] = g);
+  };
+  let nModel = 0;
+  for (const C of B.components) {
+    let g = null;
+    if (C.meshes && C.meshes.length) {
+      const parts = C.meshes.map((I) => { const s = getModel(I.model); return s && s.clone().applyMatrix4(new THREE.Matrix4().fromArray(I.m)); }).filter(Boolean);
+      if (parts.length) { g = parts.length === 1 ? parts[0] : mergeGeoms(parts); g = g.toNonIndexed(); g.computeVertexNormals(); g.computeBoundingSphere(); nModel++; }
+    }
+    let m;
+    if (g) {
+      m = new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.4, metalness: 0.45, emissive: 0x000000, side: THREE.DoubleSide });
+    } else {
+      const sh = new THREE.Shape(C.hull.map(([x, y]) => new THREE.Vector2(x, y)));
+      g = new THREE.ExtrudeGeometry(sh, { depth: 1, bevelEnabled: false });
+      m = new THREE.MeshStandardMaterial({ color: compColor(C.ref, C.lib), roughness: 0.55, metalness: 0.1, emissive: 0x000000 });
+    }
+    const mesh = new THREE.Mesh(g, m); mesh.userData = { kind: 'comp', C, real: !!C.meshes && m.vertexColors };
+    // 3D model: keep the model z (from the board surface of its side); layout() maps it through the exploded stack
+    const base = mesh.userData.real ? Float32Array.from(g.attributes.position.array) : null;
+    model.add(mesh); compObjs.push({ C, mesh, hidden: false, real: mesh.userData.real, base });
+    ntri += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  }
+  Object.values(modelGeo).forEach((g) => g && g.dispose());
+
+  // simulation bodies (CSX): what the solver meshes, drawn over the illustration models
+  for (const S of B.sim_bodies || []) {
+    let g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(dec(S.pos, Float32Array), 3));
+    g.setIndex(new THREE.BufferAttribute(dec(S.idx, Uint32Array), 1));
+    g = g.toNonIndexed(); g.computeVertexNormals();
+    const metal = S.kind === 'metal';
+    const m = new THREE.MeshStandardMaterial({ color: metal ? 0x2ab8d6 : 0x9b6bd6, metalness: metal ? 0.3 : 0, roughness: 0.5,
+      transparent: true, opacity: metal ? 0.55 : 0.35, depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(g, m); mesh.renderOrder = 3; mesh.userData = { kind: 'sim', S };
+    model.add(mesh); simObjs.push({ S, mesh, base: Float32Array.from(g.attributes.position.array) });
+  }
+  $('geoSeg').hidden = !(nModel && simObjs.length);        // the switch only when there is something to switch between
+  showModels = true; showSim = true;
+  $('geoHint').hidden = !(nModel || simObjs.length);
+  $('geoHint').textContent = simObjs.length
+    ? `⚠ The 3D models are illustration only. The simulation meshes the cyan (metal) and violet (dielectric) bodies from ${B.sim_source}.`
+    : '⚠ The 3D models are illustration only; the simulation does not use them. No simulation model (<board>_sim.xml) next to the board.';
+
+  ports = (B.ports || []).map((p) => ({ ...p, on: !!p.confident && !p.error }));
+  portGroup = new THREE.Group(); model.add(portGroup);
+  buildPortList();
+  fillSim();
+
+  $('bname').textContent = B.name || 'Board';
+  const cuTh = B.stack.filter((l) => l.type === 'copper').map((l) => l.t);
+  $('bmeta').innerHTML = '';
+  for (const t of [`${cuN} copper layers`, `${B.thickness.toFixed(3)} mm`, `${(x1 - x0).toFixed(1)} × ${(y1 - y0).toFixed(1)} mm`,
+                   `stackup: ${B.stackup_source}`, `${B.components.length} components` + (nModel ? ` (${nModel} with 3D model)` : ''), `${n} plated holes`]) {
+    const s = document.createElement('span'); s.textContent = t; $('bmeta').appendChild(s);
+  }
+  $('stats').textContent = `${Math.round(ntri / 1000)}k triangles · ${B.nets.length - 1} nets`;
+  buildLayerList();
+  layout(); setView('iso'); drawXsec(); showInfo(null);
+  $('status').hidden = true;
+}
+
+// ---------------------------------------------------------------- layout (explode + proportional z)
+function zScale() { return Math.round(Math.pow(10, +$('zscale').value * 1.54)); }        // 1x .. ~235x
+function gap() { return +$('explode').value * diag * 0.07; }
+
+function layout() {
+  if (!B) return;
+  const s = zScale(), g = gap();
+  $('zscaleV').textContent = s + '×'; $('explodeV').textContent = g.toFixed(1) + ' mm';
+  let z = 0;
+  for (let i = layerObjs.length - 1; i >= 0; i--) {
+    const o = layerObjs[i];
+    o.z0 = z; z += o.L.t * s; o.z1 = z;
+    if (o.mesh) { o.mesh.position.z = o.z0; o.mesh.scale.z = Math.max(o.L.t * s, 1e-4); }
+    if (i > 0) z += g;
+  }
+  const top = layerObjs[0].z1, bot = layerObjs[layerObjs.length - 1].z0;
+  model.position.z = -(top + bot) / 2;
+  const cg = g * 1.4;
+  // true-z -> view-z map of the stack, applied to every vertex of the 3D models and simulation bodies: what is
+  // above the board stays rigid on the top layer, what is below rigid under the bottom layer, and the slice
+  // within the board thickness (e.g. an edge connector's flange band) stretches with the exploded layers. So
+  // legs and pins always touch their copper and nothing crosses a layer; separation 0 / Z 1x is the true shape.
+  const zt = layerObjs.map((o) => [Math.min(o.L.z0, o.L.z1), Math.max(o.L.z0, o.L.z1), o.z0, o.z1]);
+  const tTop = Math.max(...zt.map((r) => r[1])), tBot = Math.min(...zt.map((r) => r[0]));
+  const zview = (z) => {
+    if (z >= tTop) return top + (z - tTop);
+    if (z <= tBot) return bot - (tBot - z);
+    for (const [a, b, v0, v1] of zt) if (z >= a && z <= b) return b > a ? v0 + (z - a) / (b - a) * (v1 - v0) : v0;
+    return bot + (z - tBot) / (tTop - tBot) * (top - bot);
+  };
+  for (const o of compObjs) {
+    const h = o.C.h;
+    if (o.real) {
+      const p = o.mesh.geometry.attributes.position, ref = o.C.side === 'F' ? tTop : tBot;
+      for (let i = 2; i < o.base.length; i += 3) p.array[i] = zview(ref + o.base[i]);
+      p.needsUpdate = true; o.mesh.geometry.computeVertexNormals(); o.mesh.geometry.computeBoundingSphere();
+      o.mesh.position.z = 0;
+    }
+    else if (o.C.side === 'F') { o.mesh.position.z = top + cg; o.mesh.scale.z = h; }
+    else { o.mesh.position.z = bot - cg - h; o.mesh.scale.z = h; }
+  }
+  for (const o of simObjs) {               // absolute stack z; same warp as the 3D models
+    const p = o.mesh.geometry.attributes.position;
+    for (let i = 2; i < o.base.length; i += 3) p.array[i] = zview(o.base[i]);
+    p.needsUpdate = true; o.mesh.geometry.computeVertexNormals(); o.mesh.geometry.computeBoundingSphere();
+  }
+  if (barrels) {
+    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion();
+    const cuStack = B.copper.map((name) => layerObjs.findIndex((o) => o.L.name === name));
+    for (let i = 0; i < B.drills.n; i++) {
+      const a = layerObjs[cuStack[barrelData.top[i]]], b = layerObjs[cuStack[barrelData.bot[i]]];
+      const r = barrelData.d[i] / 2, zt = a.z1, zb = b.z0;
+      m4.compose(new THREE.Vector3(barrelData.x[i], barrelData.y[i], (zt + zb) / 2), q, new THREE.Vector3(r, r, Math.max(zt - zb, 1e-4)));
+      barrels.setMatrixAt(i, m4);
+    }
+    barrels.instanceMatrix.needsUpdate = true;
+    barrels.computeBoundingSphere();
+    barrels.visible = showBarrels;
+  }
+  layoutPorts();
+  applyVisibility();
+}
+
+// ---------------------------------------------------------------- RF ports
+function portZ(zmm) {
+  // board z (mm, 0 at the bottom of the board) -> exploded model z
+  let acc = 0;
+  for (let i = layerObjs.length - 1; i >= 0; i--) {
+    const o = layerObjs[i];
+    if (zmm <= o.L.z1 + 1e-6) return o.z0 + Math.max(0, zmm - o.L.z0) * zScale();
+    acc = o.z1;
+  }
+  return acc;
+}
+const numTex = {};
+function portNumberSprite(n) {
+  if (!numTex[n]) {
+    const c = document.createElement('canvas'); c.width = c.height = 64;
+    const g = c.getContext('2d');
+    g.fillStyle = '#d6204e'; g.beginPath(); g.arc(32, 32, 30, 0, 2 * Math.PI); g.fill();
+    g.fillStyle = '#fff'; g.font = '600 34px sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(n), 32, 34);
+    numTex[n] = new THREE.CanvasTexture(c);
+  }
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: numTex[n], depthTest: false, transparent: true }));
+  sp.renderOrder = 5;
+  return sp;
+}
+function activePorts() { return ports.filter((p) => p.on && !p.error); }
+function layoutPorts() {
+  if (!portGroup) return;
+  portGroup.clear();
+  const act = activePorts();
+  ports.forEach((p, i) => {
+    if (!p.on || p.error) return;
+    const [x0, y0, z0] = p.start, [x1, y1, z1] = p.stop;
+    const w = Math.max(Math.abs(x1 - x0), 0.05), h = Math.max(Math.abs(y1 - y0), 0.05);
+    const za = portZ(Math.min(z0, z1)), zb = portZ(Math.max(z0, z1));
+    const g = new THREE.BoxGeometry(w, h, Math.max(zb - za, 0.05));
+    const m = new THREE.MeshStandardMaterial({ color: 0xff3b6b, emissive: 0x7a0020, transparent: true, opacity: 0.85 });
+    const mesh = new THREE.Mesh(g, m); mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (za + zb) / 2);
+    mesh.userData = { kind: 'port', i }; mesh.renderOrder = 3;
+    portGroup.add(mesh);
+    // direction: the excitation drives the signal sheet (stop) against the reference copper (start)
+    const up = z1 >= z0 ? 1 : -1, len = Math.max(diag * 0.012, 0.4);
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(len * 0.35, len, 16), new THREE.MeshStandardMaterial({ color: 0xff3b6b, emissive: 0x7a0020 }));
+    cone.rotation.x = up > 0 ? Math.PI / 2 : -Math.PI / 2;
+    cone.position.set((x0 + x1) / 2, (y0 + y1) / 2, (up > 0 ? zb : za) + up * len * 0.6);
+    cone.userData = { kind: 'port', i };
+    portGroup.add(cone);
+    const sp = portNumberSprite(act.indexOf(p) + 1);
+    const sz = Math.max(diag * 0.025, 0.8);
+    sp.scale.set(sz, sz, 1); sp.position.set((x0 + x1) / 2, (y0 + y1) / 2, (up > 0 ? zb : za) + up * (len * 1.4 + sz * 0.6));
+    portGroup.add(sp);
+  });
+}
+function buildPortList() {
+  const box = $('ports'); box.innerHTML = '';
+  if (!ports.length) { box.innerHTML = '<p class="hint">No RF connector found. Use “Add port by click”.</p>'; }
+  const act = activePorts();
+  ports.forEach((p, i) => {
+    if (p.z0 == null) p.z0 = 50;
+    const row = document.createElement('div'); row.className = 'row portrow'; row.dataset.port = i;
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = p.on; cb.disabled = !!p.error;
+    cb.setAttribute('aria-label', 'Use ' + p.ref + ' as a port');
+    cb.addEventListener('click', (e) => { e.stopPropagation(); p.on = cb.checked; buildPortList(); layoutPorts(); });
+    const k = act.indexOf(p);
+    const num = document.createElement('span'); num.className = 'pnum'; num.textContent = k >= 0 ? String(k + 1) : '·';
+    num.style.opacity = k >= 0 ? 1 : 0.3;
+    const t = document.createElement('span'); t.className = 'nm';
+    t.textContent = `${p.ref}  ${p.net}` + (p.error ? '  (no reference copper under the pad)' : '');
+    t.title = (p.reasons || []).join('; ') + (p.error ? ' — ' + p.error : '') + ` — score ${p.score}`;
+    const z = document.createElement('input'); z.type = 'number'; z.className = 'z0'; z.min = 1; z.max = 1000; z.step = 'any'; z.value = p.z0;
+    z.title = 'Port reference impedance (Ω)'; z.setAttribute('aria-label', 'Z0 of ' + p.ref);
+    z.addEventListener('click', (e) => e.stopPropagation());
+    z.addEventListener('change', () => { const v = +z.value; p.z0 = v > 0 ? v : 50; z.value = p.z0; });
+    const sc = document.createElement('span'); sc.className = 'tag'; sc.textContent = p.manual ? 'manual' : (p.confident ? 'likely' : 'maybe');
+    row.append(cb, num, t, z, sc);
+    row.addEventListener('click', () => select({ kind: 'port', i }));
+    box.appendChild(row);
+  });
+  syncPortButtons();
+}
+function syncPortButtons() {
+  $('snapPort').disabled = !B; $('copyPorts').disabled = !ports.some((p) => p.on);
+  $('snapPort').classList.toggle('on', snapMode);
+  syncRun();
+}
+async function snapToPad(x, y, replace) {
+  // magnetic snap: the nearest signal pad on an outer layer, port by kicad_sim.make_port (local twin or Pyodide)
+  if (API && B && B.path) {
+    try {
+      const r = await api('/api/snap', { path: B.path, x, y, fab: B.fab || undefined });
+      if (r.port) addSnapped(r.port, replace);
+    } catch (err) { showStatus('Port placement failed', String(err.message || err)); }
+    return;
+  }
+  try {
+    const py = await pyodide();
+    py.globals.set('sx', x); py.globals.set('sy', y);
+    const out = await py.runPythonAsync(`
+import json, rf_ports
+_pad, _port = rf_ports.snap(_b, sx, sy)
+json.dumps(None if _pad is None else dict(ref=_pad.ref, net=_pad.net, layer=_pad.layer, start=_port['start'], stop=_port['stop'],
+    ref_net=_port.get('ref_net'), pad=[float(v) for v in (*_pad.pts.min(0), *_pad.pts.max(0))]))`);
+    const p = JSON.parse(out);
+    if (p) addSnapped(p, replace);
+  } catch (err) {
+    showStatus('Port placement needs the importer', String(err.message || err));
+  }
+}
+function addSnapped(p, replace) {
+  if (replace != null && ports[replace]) {           // a dragged port moves to the new pad
+    const old = ports[replace];
+    ports[replace] = { ...old, ...p, on: true, error: undefined, manual: true, reasons: ['moved by hand'] };
+    buildPortList(); layoutPorts(); return;
+  }
+  const k = ports.findIndex((q) => q.ref === p.ref && q.net === p.net);
+  if (k >= 0) { ports[k] = { ...ports[k], ...p, on: true, error: undefined, manual: true }; }
+  else ports.push({ ...p, score: 0, reasons: ['placed by hand'], confident: false, on: true, manual: true, z0: 50 });
+  buildPortList(); layoutPorts();
+}
+$('snapPort').addEventListener('click', () => { snapMode = !snapMode; syncPortButtons(); canvas.style.cursor = snapMode ? 'crosshair' : ''; });
+$('copyPorts').addEventListener('click', async () => {
+  const refs = ports.filter((p) => p.on).map((p) => `--port ${p.ref}`).join(' ');
+  const cmd = `python twin/kicad_sim.py ${B.name || 'board'}.kicad_pcb ${refs} --fmax 6e9`;
+  try { await navigator.clipboard.writeText(cmd); showStatus('Copied', cmd); } catch { showStatus('Command', cmd); }
+});
+
+// ---------------------------------------------------------------- local twin (server) and simulation
+let API = null;                 // /api/health of the local twin, when the page is served by it
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+  if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+  return d;
+}
+function fillSim() {
+  const sel = $('simFab'); sel.innerHTML = '';
+  const own = document.createElement('option'); own.value = '';
+  own.textContent = B.stackup_source === 'file' ? 'As in the board file' : 'Board: ' + B.stackup_source;
+  sel.appendChild(own);
+  for (const s of B.stackups || []) {
+    const o = document.createElement('option'); o.value = s.id;
+    o.textContent = `${s.fab} ${s.name} (${s.total_mm} mm)` + (s.generic ? ' · generic' : '');
+    o.title = s.why; sel.appendChild(o);
+  }
+  sel.value = B.fab || '';
+  if (B.stackup_source !== 'file' && !B.fab && (B.stackups || []).length) sel.value = B.stackups[0].id;
+  const np = (B.passives || []).length;
+  $('simCompNote').textContent = np ? `${np} found: ` + B.passives.slice(0, 6).map((c) => `${c.ref} ${c.text}`).join(', ') + (np > 6 ? ' …' : '') : 'no two-pad passives with a value';
+  $('simComp').disabled = !np; if (!np) $('simComp').checked = false;
+  fillRuns();
+  syncRun();
+}
+function syncRun() {
+  const n = activePorts().length;
+  const can = !!(API && B && B.path) && n > 0 && !job;
+  $('runSim').disabled = !can;
+  $('runSim').textContent = n ? `Run simulation (${n} port${n > 1 ? 's' : ''}, ${n} excitation${n > 1 ? 's' : ''})` : 'Run simulation';
+  $('simHint').hidden = !!API;
+}
+let job = null, pollT = null;
+async function runSim() {
+  const act = activePorts();
+  const req = {
+    path: B.path, fab: $('simFab').value || null, fmax: +$('simFmax').value, coarse: +$('simMesh').value, engine: $('simEng').value,
+    converge: $('simConv').checked,
+    ports: act.map((p) => ({ ref: p.ref, net: p.net, layer: p.layer, pad_no: p.pad_no, z0: p.z0 || 50 })),
+    materials: { dispersion: $('simDisp').checked ? 'debye' : null, conductor: $('simLoss').checked ? 'loss' : 'pec',
+                 roughness_um: $('simRq').value === '' ? null : +$('simRq').value, components: $('simComp').checked },
+  };
+  try {
+    job = await api('/api/run', req);
+    $('simProg').hidden = false; $('cancelSim').hidden = false; syncRun();
+    pollJob();
+  } catch (err) { showStatus('Could not start the run', String(err.message || err)); job = null; syncRun(); }
+}
+async function pollJob() {
+  clearTimeout(pollT);
+  if (!job) return;
+  let j;
+  try { j = await api('/api/job/' + job.id); } catch (err) { $('simText').textContent = String(err.message || err); pollT = setTimeout(pollJob, 2000); return; }
+  const pr = j.progress || {}, n = Math.max(pr.n || 1, 1);
+  const frac = pr.frac != null ? pr.frac : Math.min(1, Math.max(0, -(pr.energy_db || 0) / 40));   // -40 dB or the time limit
+  const tot = j.state === 'done' ? 1 : (Math.max((pr.exc || 1) - 1, 0) + frac) / n;
+  $('simBar').style.width = (100 * tot).toFixed(1) + '%';
+  const last = (j.log || []).slice(-1)[0] || '';
+  $('simText').textContent = j.state === 'running'
+    ? `excitation ${pr.exc || 1}/${n} · timestep ${pr.timestep || 0} · energy ${(pr.energy_db || 0).toFixed(1)} dB · ${pr.mcells_s ? pr.mcells_s.toFixed(0) + ' MC/s' : ''} · ${j.elapsed_s.toFixed(0)} s`
+    : `${j.state}${j.error ? ': ' + j.error : ''} · ${j.elapsed_s.toFixed(0)} s` + (last ? '\n' + last : '');
+  if (j.state === 'running' || j.state === 'queued') { pollT = setTimeout(pollJob, 1000); return; }
+  $('cancelSim').hidden = true;
+  if (j.state === 'done' && j.result) {
+    showResult(j.result, '/api/job/' + j.id + '/touchstone');
+    B.runs = [{ run: j.out.split(/[\\/]/).pop(), result: null, live: j.result }, ...(B.runs || [])]; fillRuns();
+  }
+  job = null; syncRun();
+}
+$('runSim').addEventListener('click', runSim);
+$('cancelSim').addEventListener('click', async () => { if (job) { try { await api('/api/job/' + job.id + '/cancel', {}); } catch {} } });
+function fillRuns() {
+  const sel = $('runsSel'); sel.innerHTML = '';
+  const runs = (B && B.runs) || [];
+  sel.hidden = !runs.length;
+  const o0 = document.createElement('option'); o0.value = ''; o0.textContent = `Earlier runs (${runs.length})`; sel.appendChild(o0);
+  runs.forEach((r, i) => { const o = document.createElement('option'); o.value = i; o.textContent = r.run; sel.appendChild(o); });
+}
+$('runsSel').addEventListener('change', async () => {
+  const r = (B.runs || [])[+$('runsSel').value];
+  if (!r) return;
+  try { const res = r.live || await (await fetch('/api/file?path=' + encodeURIComponent(r.result))).json(); showResult(res, null); }
+  catch (err) { showStatus('Could not open the run', String(err.message || err)); }
+});
+
+// ---------------------------------------------------------------- results: |S|, Smith, TDR, phase
+let R = null, plotMode = 'db', shown = {};
+const SER_COL = ['#d6204e', '#1f77b4', '#2ca02c', '#9467bd', '#ff7f0e', '#17becf', '#8c564b', '#bcbd22'];
+function cplx(res, k) { return { re: res.S_re[k], im: res.S_im[k] }; }
+function showResult(res, touch) {
+  R = res;
+  $('resSec').hidden = false;
+  const keys = Object.keys(res.S_re || {});
+  shown = {}; keys.forEach((k) => { shown[k] = /^S(\d)\1$/.test(k) || /^S21$/.test(k) || (keys.length <= 4); });
+  const lg = $('legend'); lg.innerHTML = '';
+  keys.forEach((k, i) => {
+    const l = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = shown[k];
+    cb.addEventListener('change', () => { shown[k] = cb.checked; drawPlot(); });
+    const sw = document.createElement('i'); sw.style.background = SER_COL[i % SER_COL.length];
+    l.append(cb, sw, document.createTextNode(k)); lg.appendChild(l);
+  });
+  const dl = $('resInfo'); dl.innerHTML = '';
+  const add = (a, b) => { const dt = document.createElement('dt'); dt.textContent = a; const dd = document.createElement('dd'); dd.textContent = b; dl.append(dt, dd); };
+  add('Board', res.board + ' · ' + res.stackup);
+  const m = res.materials || {};
+  add('Model', [m.dispersion === 'debye' ? 'DS laminate' : 'constant εr', m.conductor === 'loss' ? 'lossy copper' + (m.roughness_um != null ? ` Rq ${m.roughness_um} µm` : '') : 'PEC copper',
+                (res.components || []).length ? `${res.components.length} lumped parts` : null].filter(Boolean).join(' · '));
+  add('Mesh', `${res.mesh.join(' × ')} (${res.mcells.toFixed(2)} MCells)`);
+  const q = res.mesh_quality;
+  if (q && q.grade) add('Mesh quality ' + (q.grade === 'ok' ? '✓' : '⚠ ' + q.grade),
+    `cells ${q.min_mm.map((v) => v.toFixed(3)).join('/')} – ${q.max_mm.map((v) => v.toFixed(2)).join('/')} mm · grading ${q.grading} · aspect ${q.aspect} · ${q.cells_per_wavelength} cells/λ` +
+    (q.dt_ps != null ? ` · dt ${q.dt_ps.toFixed(3)} ps` : '') + (q.conformal_edges != null ? ` · conformal edges ${q.conformal_edges} (${(100 * (q.conformal_frac || 0)).toFixed(1)} %)` : ''));
+  if (res.convergence) add(res.convergence.converged ? 'Mesh check ✓' : 'Mesh check ✗', res.convergence.verdict);
+  const faults = (res.runs || []).reduce((n, r) => n + ((r.faults || []).length), 0);
+  if (faults) add('GPU faults ⚠', `${faults} run${faults > 1 ? 's' : ''} repeated after a GPU error (memory guard / blow-up) — the GPU is marginal, results are from clean repeats`);
+  if (res.runs) add('Run time', res.runs.map((r) => r.wall_s.toFixed(0) + ' s').join(' + ') +
+    (res.runs[0].variant ? ` · ${res.runs[0].variant === 'cuda' ? 'GPU' : 'CPU'}` : '') +
+    (res.runs[0].mcells_s ? ` · ${res.runs[0].mcells_s.toFixed(0)} MC/s` : ''));
+  if (res.Z0_ohm) add('Line', `Z0 ${res.Z0_ohm.toFixed(1)} Ω · εeff ${res.eeff.toFixed(3)} · ${res.line_length_mm.toFixed(1)} mm`);
+  const f = res.f_GHz;
+  for (const k of keys) if (/^S(\d)\1$/.test(k)) {
+    const db = res.S_dB[k], mx = (lo, hi) => Math.max(...db.filter((_, i) => f[i] >= lo && f[i] <= hi));
+    add(k + ' max', `${mx(0, f[f.length - 1] / 2).toFixed(1)} dB to ${(f[f.length - 1] / 2).toFixed(1)} GHz · ${mx(0, 1e9).toFixed(1)} dB to ${f[f.length - 1].toFixed(1)} GHz`);
+  }
+  if (touch) { $('dlTouch').href = touch; $('dlTouch').hidden = false; } else $('dlTouch').hidden = true;
+  const fm = res.fields && res.fields.maps && API && res.fields.base;
+  $('fieldCtl').hidden = !fm; fieldOn = false; applyField();
+  if (fm) {
+    const fs = $('fieldF'); fs.innerHTML = '';
+    res.fields.f_GHz.forEach((f, k) => { const o = document.createElement('option'); o.value = k; o.textContent = f.toFixed(2) + ' GHz'; fs.appendChild(o); });
+    fs.value = Math.min(1, res.fields.f_GHz.length - 1);
+  }
+  drawPlot();
+  $('resSec').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+document.querySelectorAll('[data-plot]').forEach((b) => b.addEventListener('click', () => {
+  plotMode = b.dataset.plot; document.querySelectorAll('[data-plot]').forEach((x) => x.classList.toggle('on', x === b)); drawPlot();
+}));
+let fieldOn = false;
+const texLoader = new THREE.TextureLoader(), texCache = {};
+function applyField() {
+  $('fieldBtn').classList.toggle('on', fieldOn); $('fieldNote').hidden = !fieldOn;
+  const F = R && R.fields, k = +$('fieldF').value || 0;
+  for (const o of layerObjs) {
+    if (!o.mesh || o.L.type !== 'copper') continue;
+    const m = o.mesh.material, maps = F && F.maps && F.maps[o.L.name];
+    if (!fieldOn || !maps || !maps[k]) { if (m.map) { m.map = null; m.color.set(o.L.color); m.needsUpdate = true; } continue; }
+    const g = o.mesh.geometry, P = g.attributes.position, [bx0, by0, bx1, by1] = F.bbox;
+    if (!g.userData.uvFor || g.userData.uvFor !== F.bbox.join()) {
+      const uv = new Float32Array(P.count * 2);
+      for (let i = 0; i < P.count; i++) { uv[2 * i] = (P.getX(i) - bx0) / (bx1 - bx0); uv[2 * i + 1] = (P.getY(i) - by0) / (by1 - by0); }
+      g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.userData.uvFor = F.bbox.join();
+    }
+    const url = '/api/file?path=' + encodeURIComponent(F.base + '/' + maps[k]);
+    if (!texCache[url]) { const t = texLoader.load(url); t.colorSpace = THREE.SRGBColorSpace; texCache[url] = t; }
+    m.map = texCache[url]; m.color.set('#ffffff'); m.needsUpdate = true;
+  }
+}
+$('fieldBtn').addEventListener('click', () => { fieldOn = !fieldOn; applyField(); });
+$('fieldF').addEventListener('change', applyField);
+function tdr(res, k, z0) {
+  // step response of S11 by the inverse DFT of the band-limited reflection (Hann window); needs a uniform
+  // grid that starts near df (the twin runs fmin = fmax/nf). Returns {t_ns[], z[]}.
+  const f = res.f_GHz, S = cplx(res, k), N = f.length, df = (f[N - 1] - f[0]) / (N - 1);
+  const k0 = Math.round(f[0] / df);
+  if (Math.abs(f[0] - k0 * df) > 0.05 * df) return null;
+  const K = k0 + N, M = 4096, H = new Array(K).fill(null).map(() => [0, 0]);
+  for (let i = 0; i < N; i++) { const w = 0.5 * (1 + Math.cos(Math.PI * (k0 + i) / K)); H[k0 + i] = [S.re[i] * w, S.im[i] * w]; }
+  for (let i = 0; i < k0; i++) H[i] = [S.re[0], 0];                 // DC: hold the first sample (real)
+  const tmax = 2 * Math.max(1.5, (res.line_length_mm || 60) * 2 * 2.2 / 300), nT = Math.min(M / 2, Math.ceil(tmax * M * df));
+  const t = [], z = []; let step = 0;
+  for (let n = 0; n < nT; n++) {
+    let h = H[0][0];
+    for (let q = 1; q < K; q++) { const a = 2 * Math.PI * q * n / M; h += 2 * (H[q][0] * Math.cos(a) - H[q][1] * Math.sin(a)); }
+    step += h / M;
+    t.push(n / (M * df)); const r = Math.max(-0.95, Math.min(0.95, step)); z.push(z0 * (1 + r) / (1 - r));
+  }
+  return { t, z };
+}
+function drawPlot() {
+  const cv = $('plot'); if (!R || !cv || $('resSec').hidden) return;
+  const dpr = Math.min(window.devicePixelRatio, 2), W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const c = cv.getContext('2d'); c.scale(dpr, dpr); c.clearRect(0, 0, W, H);
+  const fg = css('--fg'), mu = css('--muted'), ln = css('--line');
+  c.font = '10.5px ' + css('--font-data'); c.lineWidth = 1;
+  const keys = Object.keys(R.S_re).filter((k) => shown[k]);
+  const col = (k) => SER_COL[Object.keys(R.S_re).indexOf(k) % SER_COL.length];
+  if (plotMode === 'smith') {
+    const r = Math.min(W, H) / 2 - 12, cx = W / 2, cy = H / 2;
+    c.strokeStyle = ln;
+    c.beginPath(); c.arc(cx, cy, r, 0, 2 * Math.PI); c.stroke();
+    c.beginPath(); c.moveTo(cx - r, cy); c.lineTo(cx + r, cy); c.stroke();
+    for (const rr of [0.2, 0.5, 1, 2, 5]) { const cr = r / (1 + rr); c.beginPath(); c.arc(cx + r - cr, cy, cr, 0, 2 * Math.PI); c.stroke(); }
+    c.save(); c.beginPath(); c.arc(cx, cy, r, 0, 2 * Math.PI); c.clip();
+    for (const xx of [0.2, 0.5, 1, 2, 5]) for (const sg of [1, -1]) { const cr = r / xx; c.beginPath(); c.arc(cx + r, cy - sg * cr, cr, 0, 2 * Math.PI); c.stroke(); }
+    c.restore();
+    for (const k of keys.filter((k) => /^S(\d)\1$/.test(k))) {
+      const S = cplx(R, k); c.strokeStyle = col(k); c.lineWidth = 1.6; c.beginPath();
+      S.re.forEach((re, i) => { const x = cx + re * r, y = cy - S.im[i] * r; i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.stroke();
+      c.fillStyle = col(k); c.beginPath(); c.arc(cx + S.re[0] * r, cy - S.im[0] * r, 3, 0, 2 * Math.PI); c.fill();
+    }
+    c.fillStyle = mu; c.textAlign = 'left'; c.fillText('reflections only · dot = lowest f', 6, H - 6);
+    return;
+  }
+  // x-y plots
+  const L = 42, Rr = 10, T = 10, Bm = 26, pw = W - L - Rr, ph = H - T - Bm;
+  let xs, series = [], xlab, ylab;
+  if (plotMode === 'tdr') {
+    const z0 = 50;
+    for (const k of keys.filter((k) => /^S(\d)\1$/.test(k))) { const d = tdr(R, k, z0); if (d) { xs = d.t; series.push({ k, y: d.z }); } }
+    xlab = 'time (ns, round trip)'; ylab = 'Z (Ω)';
+    if (!series.length) { c.fillStyle = mu; c.fillText('TDR needs a uniform grid from near DC (runs of the local twin have it)', 8, 20); return; }
+  } else {
+    xs = R.f_GHz; xlab = 'f (GHz)';
+    for (const k of keys) {
+      if (plotMode === 'db') series.push({ k, y: R.S_dB[k] });
+      else { const S = cplx(R, k); let ph0 = 0, prev = 0; series.push({ k, y: S.re.map((re, i) => { let a = Math.atan2(S.im[i], re) * 180 / Math.PI; while (a - prev > 180) a -= 360; while (a - prev < -180) a += 360; prev = a; return a; }) }); }
+    }
+    ylab = plotMode === 'db' ? 'dB' : 'deg (unwrapped)';
+  }
+  let y0 = Infinity, y1 = -Infinity;
+  for (const s of series) for (const v of s.y) if (isFinite(v)) { y0 = Math.min(y0, v); y1 = Math.max(y1, v); }
+  if (plotMode === 'db') { y0 = Math.max(Math.floor(y0 / 5) * 5, -60); y1 = Math.min(Math.ceil(y1 / 5) * 5 + 1, 2); }
+  if (plotMode === 'tdr') { const m = Math.max(10, Math.abs(y1 - 50), Math.abs(y0 - 50)); y0 = 50 - m * 1.1; y1 = 50 + m * 1.1; }
+  if (y1 - y0 < 1e-9) { y0 -= 1; y1 += 1; }
+  const x0 = xs[0], x1 = xs[xs.length - 1];
+  const X = (v) => L + (v - x0) / (x1 - x0) * pw, Y = (v) => T + (y1 - v) / (y1 - y0) * ph;
+  const ticks = (a, b, n) => { const st = Math.pow(10, Math.floor(Math.log10((b - a) / n))); const m = [1, 2, 5, 10].find((q) => (b - a) / (q * st) <= n) * st; const o = []; for (let v = Math.ceil(a / m) * m; v <= b + 1e-9; v += m) o.push(+v.toFixed(6)); return o; };
+  c.strokeStyle = ln; c.fillStyle = mu;
+  c.textAlign = 'right'; for (const v of ticks(y0, y1, 5)) { c.beginPath(); c.moveTo(L, Y(v)); c.lineTo(L + pw, Y(v)); c.stroke(); c.fillText(String(v), L - 4, Y(v) + 3); }
+  c.textAlign = 'center'; for (const v of ticks(x0, x1, 6)) { c.beginPath(); c.moveTo(X(v), T); c.lineTo(X(v), T + ph); c.stroke(); c.fillText(String(v), X(v), T + ph + 12); }
+  c.fillText(xlab, L + pw / 2, H - 2); c.save(); c.translate(10, T + ph / 2); c.rotate(-Math.PI / 2); c.fillText(ylab, 0, 0); c.restore();
+  for (const s of series) {
+    c.strokeStyle = col(s.k); c.lineWidth = 1.6; c.beginPath();
+    s.y.forEach((v, i) => { const x = X(xs[i]), y = Y(Math.max(y0, Math.min(y1, v))); i ? c.lineTo(x, y) : c.moveTo(x, y); }); c.stroke();
+  }
+}
+new ResizeObserver(() => drawPlot()).observe($('plot'));
+
+function applyVisibility() {
+  for (const o of layerObjs) if (o.mesh) o.mesh.visible = o.visible;
+  for (const o of compObjs) {
+    const sideOk = compMode === 'all' || compMode === o.C.side;
+    o.mesh.visible = sideOk && !o.hidden && (!o.real || showModels);
+  }
+  for (const o of simObjs) o.mesh.visible = showSim;
+  document.querySelectorAll('[data-geo]').forEach((b) => b.classList.toggle('on', b.dataset.geo === (showModels && showSim ? 'both' : showSim ? 'sim' : 'model')));
+  $('illus').hidden = !(showModels && compObjs.some((o) => o.real && o.mesh.visible));
+  const nh = compObjs.filter((o) => o.hidden).length;
+  $('showAll').textContent = `Show hidden (${nh})`; $('showAll').disabled = nh === 0;
+  $('hideSel').disabled = !(selected && selected.kind === 'comp');
+  $('barrels').classList.toggle('on', showBarrels);
+}
+
+// ---------------------------------------------------------------- stackup list and cross-section
+function fmtT(t) { return t < 0.1 ? (t * 1000).toFixed(t * 1000 < 10 ? 1 : 0) + ' µm' : t.toFixed(3) + ' mm'; }
+function buildLayerList() {
+  const box = $('layers'); box.innerHTML = '';
+  layerObjs.forEach((o, si) => {
+    const L = o.L;
+    if (!o.mesh) return;
+    const row = document.createElement('div'); row.className = 'row'; row.tabIndex = 0; row.dataset.si = si;
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = o.visible; cb.id = 'ly' + si;
+    cb.setAttribute('aria-label', 'Show ' + L.name);
+    cb.addEventListener('click', (e) => { e.stopPropagation(); o.visible = cb.checked; applyVisibility(); });
+    const sw = document.createElement('span'); sw.className = 'sw'; sw.style.background = L.color;
+    const nm = document.createElement('span'); nm.className = 'nm';
+    const user = B.layer_user_names && B.layer_user_names[L.name];
+    nm.textContent = L.name; const sm = document.createElement('small');
+    sm.textContent = user && user !== L.name ? user : (L.type === 'copper' ? '' : L.type + (L.er ? ' · εr ' + L.er : ''));
+    nm.appendChild(sm);
+    const th = document.createElement('span'); th.className = 'th'; th.textContent = fmtT(L.t);
+    row.append(cb, sw, nm, th);
+    row.addEventListener('click', () => select({ kind: 'layer', si }));
+    row.addEventListener('dblclick', () => { layerObjs.forEach((x, k) => { x.visible = !!x.mesh && k === si; }); syncChecks(); applyVisibility(); });
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select({ kind: 'layer', si }); } });
+    box.appendChild(row);
+  });
+  const p = document.createElement('p'); p.className = 'hint'; p.textContent = 'Double-click a layer to show it alone.';
+  const all = document.createElement('button'); all.className = 'btn small'; all.textContent = 'Show all layers';
+  all.addEventListener('click', () => { layerObjs.forEach((x) => { x.visible = !!x.mesh; }); syncChecks(); applyVisibility(); });
+  const seg = document.createElement('div'); seg.className = 'seg'; seg.append(all);
+  box.append(seg, p);
+}
+function syncChecks() { layerObjs.forEach((o, si) => { const c = $('ly' + si); if (c) c.checked = o.visible; }); }
+
+function drawXsec() {
+  const cv = $('xsec'); if (!B || !cv) return;
+  const dpr = Math.min(window.devicePixelRatio, 2), w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const c = cv.getContext('2d'); c.scale(dpr, dpr); c.clearRect(0, 0, w, h);
+  const tot = B.stack.reduce((a, l) => a + l.t, 0);
+  let y = 0;
+  for (const o of layerObjs) {
+    const L = o.L, hh = Math.max(L.t / tot * h, L.type === 'copper' ? 1.5 : 1);
+    c.fillStyle = L.color || '#888'; c.globalAlpha = L.type === 'copper' ? 1 : 0.75;
+    c.fillRect(0, y, w, hh); y += L.t / tot * h;
+  }
+  c.globalAlpha = 1;
+  c.fillStyle = css('--fg'); c.font = '11px ' + css('--font-data');
+  c.textAlign = 'right'; c.fillText(B.thickness.toFixed(3) + ' mm, to scale', w - 6, h - 6);
+}
+
+// ---------------------------------------------------------------- picking and selection
+const ray = new THREE.Raycaster(); const ptr = new THREE.Vector2(); let down = null, dragPort = null;
+function aim(e) {
+  const r = canvas.getBoundingClientRect();
+  ptr.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+}
+canvas.addEventListener('pointerdown', (e) => {
+  down = [e.clientX, e.clientY];
+  // grab a port marker: drag it onto another pad, it snaps there on release
+  if (portGroup && portGroup.children.length) {
+    aim(e);
+    const h = ray.intersectObjects(portGroup.children.filter((o) => o.userData.kind === 'port'), false)[0];
+    if (h) { dragPort = h.object.userData.i; controls.enabled = false; canvas.style.cursor = 'grabbing'; }
+  }
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (dragPort !== null) {
+    const i = dragPort; dragPort = null; controls.enabled = true; canvas.style.cursor = snapMode ? 'crosshair' : '';
+    if (Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) {
+      aim(e);
+      const objs = layerObjs.filter((o) => o.mesh && o.visible && o.L.type === 'copper').map((o) => o.mesh);
+      const h = ray.intersectObjects(objs, false)[0];
+      if (h) { const lp = model.worldToLocal(h.point.clone()); snapToPad(lp.x, lp.y, i); }
+      return;
+    }
+  }
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 4) return;
+  aim(e);
+  const objs = [...layerObjs.filter((o) => o.mesh && o.visible).map((o) => o.mesh), ...compObjs.filter((o) => o.mesh.visible).map((o) => o.mesh)];
+  if (barrels && barrels.visible) objs.push(barrels);
+  // translucent layers (mask, dielectric) only win when nothing opaque is under the pointer
+  if (portGroup) objs.push(...portGroup.children);
+  const hits = ray.intersectObjects(objs, false);
+  const hit = hits.find((h) => !h.object.material.transparent) || hits[0];
+  if (!hit) { select(null); return; }
+  if (snapMode) {
+    const lp = model.worldToLocal(hit.point.clone());
+    snapMode = false; canvas.style.cursor = ''; syncPortButtons();
+    snapToPad(lp.x, lp.y);
+    return;
+  }
+  if (cohMarking) {                       // phase-match marking in the 3D view: the pad under the click
+    const lp = model.worldToLocal(hit.point.clone());
+    api('/api/pad', { path: B.path, x: lp.x, y: lp.y }).then((r) => {
+      if (r.pad) cohPin(r.pad.ref, r.pad.pad, r.pad.net);
+      else $('cohMarkHint').textContent = 'No pad there: click on a pad.';
+    }).catch((err) => { $('cohMarkHint').textContent = String(err.message || err); });
+    return;
+  }
+  const u = hit.object.userData;
+  if (u.kind === 'port') { select({ kind: 'port', i: u.i }); return; }
+  if (u.kind === 'comp') select({ kind: 'comp', o: compObjs.find((c) => c.mesh === hit.object) });
+  else if (u.kind === 'barrel') select({ kind: 'barrel', i: hit.instanceId });
+  else {
+    const L = layerObjs[u.si].L;
+    if (L.type === 'copper') {
+      const net = hit.object.geometry.userData.net[hit.faceIndex * 3];
+      select({ kind: 'copper', si: u.si, net });
+    } else select({ kind: 'layer', si: u.si });
+  }
+});
+
+function select(s) {
+  if (selected && selected.kind === 'comp') selected.o.mesh.material.emissive.setHex(0x000000);
+  selected = s;
+  document.querySelectorAll('.row').forEach((r) => r.classList.toggle('sel', !!s && ((s.si !== undefined && +r.dataset.si === s.si) || (s.kind === 'port' && +r.dataset.port === s.i))));
+  if (s && s.kind === 'comp') s.o.mesh.material.emissive.set(css('--sel'));
+  if (s && (s.kind === 'copper' || s.kind === 'barrel')) highlightNet(s.kind === 'copper' ? s.net : barrelData.net[s.i]);
+  showInfo(s); applyVisibility();
+  if (typeof schFromSelect === 'function') schFromSelect(s);
+}
+
+function highlightNet(net) {
+  // net: index into B.nets, -1 for none, or a Set of indices (a phase-match group)
+  netSel = net;
+  const on = net instanceof Set ? (n) => net.has(n) : (n) => net < 0 || n === net;
+  const none = !(net instanceof Set) && net < 0;
+  for (const o of layerObjs) {
+    if (!o.mesh || !o.mesh.geometry.userData.net) continue;
+    const g = o.mesh.geometry, nets = g.userData.net, col = g.attributes.color.array;
+    for (let v = 0; v < nets.length; v++) { const k = none || on(nets[v]) ? 1 : 0.16; col[v * 3] = col[v * 3 + 1] = col[v * 3 + 2] = k; }
+    g.attributes.color.needsUpdate = true;
+  }
+  if (barrels) {
+    const c = new THREE.Color();
+    for (let i = 0; i < B.drills.n; i++) { const k = none || on(barrelData.net[i]) ? 1 : 0.16; c.setRGB(k, k, k); barrels.setColorAt(i, c); }
+    barrels.instanceColor.needsUpdate = true;
+  }
+  $('clearNet').hidden = none;
+  if (typeof schMarkNets === 'function') schMarkNets(none ? null : net instanceof Set ? [...net].map((i) => B.nets[i]) : [B.nets[net]]);
+}
+
+function showInfo(s) {
+  const dl = $('info'); dl.innerHTML = '';
+  const add = (k, v, cls) => { const dt = document.createElement('dt'); dt.textContent = k; const dd = document.createElement('dd'); dd.textContent = v; if (cls) dd.className = cls; dl.append(dt, dd); };
+  if (!s) { add('Click', 'a layer, track, via or component'); return; }
+  if (s.kind === 'port') {
+    const p = ports[s.i];
+    add('Port', p.ref + (p.manual ? ' (placed by hand)' : p.confident ? ' (likely RF port)' : ' (maybe)'));
+    add('Net', p.net); add('Pad layer', p.layer);
+    if (p.ref_net) add('Reference', p.ref_net + ' copper below the pad');
+    if (p.start) add('Plane', `${p.start.map((v) => v.toFixed(2)).join(', ')} → ${p.stop.map((v) => v.toFixed(2)).join(', ')} mm`);
+    if (p.error) add('Problem', p.error, 'est');
+    (p.reasons || []).forEach((r, k) => add(k ? '' : 'Why', r));
+    if (p.lib_id) add('Footprint', p.lib_id);
+    return;
+  }
+  if (s.kind === 'layer' || s.kind === 'copper') {
+    const L = layerObjs[s.si].L;
+    add('Layer', L.name + (B.layer_user_names && B.layer_user_names[L.name] && B.layer_user_names[L.name] !== L.name ? ' (' + B.layer_user_names[L.name] + ')' : ''));
+    add('Type', L.type); add('Thickness', fmtT(L.t));
+    if (L.er != null) add('εr', String(L.er));
+    if (L.tand != null) add('tan δ', String(L.tand));
+    if (L.material) add('Material', L.material);
+    if (L.type === 'mask' && L.er == null) add('Note', 'no εr in the file', 'est');
+    add('z (true)', `${L.z0.toFixed(4)} … ${L.z1.toFixed(4)} mm`);
+    if (s.kind === 'copper') add('Net', B.nets[s.net] || '(no net)');
+  } else if (s.kind === 'barrel') {
+    const i = s.i;
+    add('Hole', barrelData.via[i] ? 'via' : 'plated pad hole');
+    add('Drill', barrelData.d[i].toFixed(3) + ' mm');
+    add('Span', B.copper[barrelData.top[i]] + ' → ' + B.copper[barrelData.bot[i]]);
+    add('Net', B.nets[barrelData.net[i]] || '(no net)');
+    add('At', `${barrelData.x[i].toFixed(3)}, ${barrelData.y[i].toFixed(3)} mm`);
+  } else if (s.kind === 'comp') {
+    const C = s.o.C;
+    add('Ref', C.ref); add('Value', C.value || '—'); add('Footprint', C.lib);
+    add('Side', C.side === 'F' ? 'top' : 'bottom');
+    add('Height', C.h.toFixed(2) + ' mm' + (C.h_est ? ' (estimated from the footprint name)' : ' (3D model)'), C.h_est ? 'est' : '');
+    add('Outline', { fab: 'fab layer', courtyard: 'courtyard', pads: 'pads (no fab outline)' }[C.src] || C.src);
+    if (C.dnp) add('Fitted', 'DNP');
+    add('Hide', 'press H or Delete');
+  }
+}
+
+// ---------------------------------------------------------------- camera presets
+function setView(v) {
+  // distance that fits the whole (exploded) model, components included
+  const box = new THREE.Box3().setFromObject(model, true), sph = box.getBoundingSphere(new THREE.Sphere());
+  const fov = THREE.MathUtils.degToRad(camera.fov), fit = Math.min(1, camera.aspect);
+  const D = sph.radius / Math.sin(fov / 2) / fit * 1.02;
+  const [x0, y0, x1, y1] = B ? B.bbox : [0, 0, 1, 1];
+  const side = x1 - x0 < y1 - y0 ? [1, 0.03, 0] : [0, 0.03, 1];      // look at the long edge
+  const dir = { iso: [-0.5, 0.62, 0.6], top: [0, 1, 0.0001], bottom: [0, -1, 0.0001], side }[v];
+  const d = new THREE.Vector3(...dir).normalize().multiplyScalar(D);
+  controls.target.copy(sph.center); camera.position.copy(sph.center).add(d);
+  camera.near = D / 200; camera.far = D * 20;
+  camera.updateProjectionMatrix(); controls.update();
+}
+
+// ---------------------------------------------------------------- UI wiring
+$('explode').addEventListener('input', layout);
+$('zscale').addEventListener('input', layout);
+document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+document.querySelectorAll('[data-comp]').forEach((b) => b.addEventListener('click', () => {
+  compMode = b.dataset.comp;
+  document.querySelectorAll('[data-comp]').forEach((x) => x.classList.toggle('on', x === b));
+  applyVisibility();
+}));
+function hideSelected() { if (selected && selected.kind === 'comp') { selected.o.hidden = true; select(null); } }
+$('hideSel').addEventListener('click', hideSelected);
+$('showAll').addEventListener('click', () => { compObjs.forEach((o) => { o.hidden = false; }); applyVisibility(); });
+$('barrels').addEventListener('click', () => { showBarrels = !showBarrels; layout(); });
+document.querySelectorAll('[data-geo]').forEach((b) => b.addEventListener('click', () => {
+  if (b.disabled) return;
+  showModels = b.dataset.geo !== 'sim'; showSim = b.dataset.geo !== 'model'; applyVisibility();
+}));
+$('clearNet').addEventListener('click', () => highlightNet(-1));
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'h' || e.key === 'H' || e.key === 'Delete') hideSelected();
+  if (e.key === 'Escape') { select(null); highlightNet(-1); }
+});
+$('sheet').addEventListener('click', () => { const c = $('side').classList.toggle('collapsed'); $('sheet').setAttribute('aria-expanded', String(!c)); });
+
+function showStatus(title, text) {
+  $('status').hidden = false;
+  $('status').innerHTML = '';
+  const box = document.createElement('div'); const b = document.createElement('b'); b.textContent = title;
+  box.append(b, document.createTextNode(text));
+  $('status').appendChild(box);
+}
+
+async function loadText(text, label) {
+  try {
+    const d = JSON.parse(text);
+    if (d.S_re && d.f_GHz) { showResult(d, null); return; }          // a result.json of the twin
+    if (d.format !== 'z2v') throw new Error('not a z2v board file');
+    build(d);
+  } catch (err) {
+    showStatus('Could not open ' + label, String(err.message || err) + '. Create the file with kicad2view.py.');
+  }
+}
+
+// .kicad_pcb in the browser: the same Python importer (CSXCAD.KiCadImport + kicad2view) in Pyodide
+const PYODIDE = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+let pyReady = null, pyBoard = false;
+function pyodide() {
+  if (!pyReady) pyReady = (async () => {
+    showStatus('Starting the KiCad importer', 'Loading Python (Pyodide) with numpy and shapely…');
+    await new Promise((res, rej) => {
+      const sc = document.createElement('script'); sc.src = PYODIDE + 'pyodide.js'; sc.onload = res;
+      sc.onerror = () => rej(new Error('Pyodide could not be loaded. Open the viewer from a local server with internet access, or convert the board with kicad2view.py'));
+      document.head.appendChild(sc);
+    });
+    const py = await window.loadPyodide({ indexURL: PYODIDE });
+    await py.loadPackage(['numpy', 'shapely']);
+    py.FS.mkdirTree('/z2/CSXCAD');
+    py.FS.writeFile('/z2/CSXCAD/__init__.py', '');
+    for (const [src, dst] of [['py/KiCadImport.py', '/z2/CSXCAD/KiCadImport.py'], ['py/kicad2view.py', '/z2/kicad2view.py'],
+                              ['py/rf_ports.py', '/z2/rf_ports.py'], ['py/kicad_sim.py', '/z2/kicad_sim.py']]) {
+      const r = await fetch(src);
+      if (!r.ok) throw new Error(src + ' not found (run viewer/build.py)');
+      py.FS.writeFile(dst, await r.text());
+    }
+    await py.runPythonAsync("import sys; sys.path.insert(0, '/z2')");
+    return py;
+  })().catch((e) => { pyReady = null; throw e; });
+  return pyReady;
+}
+
+async function loadServerBoard(path, fab) {
+  try {
+    showStatus('Importing ' + path, 'The local twin reads the board, merges the copper of each net and triangulates…');
+    const d = await api('/api/load', { path, fab: fab || undefined });
+    build(d);
+    schLoad(path); cohLoad(path);
+  } catch (err) { showStatus('Could not import ' + path, String(err.message || err)); }
+}
+$('simFab').addEventListener('change', () => {
+  // a different stackup changes the layer thicknesses: reload the board with it (local twin only)
+  if (API && B && B.path) loadServerBoard(B.path, $('simFab').value || null);
+});
+$('boardSel').addEventListener('change', () => { if ($('boardSel').value) loadServerBoard($('boardSel').value); });
+async function initServer() {
+  try {
+    const h = await fetch('/api/health');
+    if (!h.ok) return false;
+    API = await h.json();
+    $('rend').textContent += ' · local twin';
+    const { boards } = await api('/api/boards');
+    const sel = $('boardSel'); sel.innerHTML = '<option value="">choose a board…</option>';
+    for (const b of boards) { const o = document.createElement('option'); o.value = b.path; o.textContent = b.path; sel.appendChild(o); }
+    $('srvBoards').hidden = false;
+    $('simHint').hidden = true;
+    const gpu = $('simEng').querySelector('option[value="cuda"]');
+    gpu.disabled = !API.cuda; gpu.textContent = API.cuda ? 'GPU (CUDA)' : 'GPU (not built here)';
+    $('simEng').options[0].textContent = API.cuda ? 'Auto (GPU)' : 'Auto (CPU)';
+    const want = new URLSearchParams(location.search).get('pcb') || (boards.length === 1 ? boards[0].path : null);
+    if (want) { sel.value = want; await loadServerBoard(want); return true; }
+    $('status').innerHTML = '<div><b>Choose a board</b>The boards of the served folder are listed under “Open a board”.</div>';
+    return true;
+  } catch { API = null; return false; }
+}
+async function loadKiCad(text, label) {
+  try {
+    const py = await pyodide();
+    showStatus('Importing ' + label, 'Reading the board, merging the copper of each net, triangulating…');
+    await new Promise((r) => setTimeout(r, 30));
+    py.FS.writeFile('/z2/board.kicad_pcb', text);
+    py.globals.set('board_name', label.replace(/\.kicad_pcb$/i, ''));
+    const out = await py.runPythonAsync(`
+import json, kicad2view
+from CSXCAD.KiCadImport import KiCadBoard
+_b = KiCadBoard('/z2/board.kicad_pcb')
+json.dumps(kicad2view.export(_b, board_name, log=lambda *a: None))`);
+    pyBoard = true;
+    build(JSON.parse(out));
+  } catch (err) {
+    showStatus('Could not import ' + label, String(err.message || err));
+  }
+}
+
+async function refreshBoards(select) {
+  const { boards } = await api('/api/boards');
+  const sel = $('boardSel'); sel.innerHTML = '<option value="">choose a board…</option>';
+  for (const b of boards) { const o = document.createElement('option'); o.value = b.path; o.textContent = b.path; sel.appendChild(o); }
+  if (select) sel.value = select;
+}
+async function openFile(f) {
+  if (!f) return;
+  const text = await f.text();
+  const pcb = /\.kicad_pcb$/i.test(f.name) || text.trimStart().startsWith('(kicad_pcb');
+  if (pcb && API) {             // served by the twin: the board goes to the server, which imports and simulates it
+    try {
+      showStatus('Uploading ' + f.name, (f.size / 1e6).toFixed(1) + ' MB to the twin server…');
+      const name = /\.kicad_pcb$/i.test(f.name) ? f.name : f.name + '.kicad_pcb';
+      const r = await fetch('/api/upload?project=' + encodeURIComponent(name.replace(/\.kicad_pcb$/i, '')) + '&name=' + encodeURIComponent(name), { method: 'POST', body: text });
+      const d = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+      await refreshBoards(d.path);
+      await loadServerBoard(d.path);
+    } catch (err) { showStatus('Could not upload ' + f.name, String(err.message || err)); }
+    return;
+  }
+  if (pcb) loadKiCad(text, f.name);
+  else loadText(text, f.name);
+}
+// several files (a KiCad project): board + schematic sheets go to the twin together, into one project folder
+async function openFiles(list) {
+  const files = [...list];
+  const kicad = files.filter((f) => /\.kicad_(pcb|sch|pro|sym|dru)$/i.test(f.name));
+  const pcb = kicad.find((f) => /\.kicad_pcb$/i.test(f.name));
+  if (!API || !kicad.some((f) => /\.kicad_sch$/i.test(f.name))) return openFile(pcb || files[0]);
+  const proj = (pcb ? pcb.name : (B && B.path ? B.path.split('/').pop() : kicad[0].name)).replace(/\.kicad_\w+$/i, '');
+  try {
+    let boardPath = null;
+    for (const f of kicad.filter((f) => f !== pcb).concat(pcb ? [pcb] : [])) {
+      showStatus('Uploading ' + f.name, (f.size / 1e6).toFixed(1) + ' MB to the twin server…');
+      const r = await fetch('/api/upload?project=' + encodeURIComponent(proj) + '&name=' + encodeURIComponent(f.name), { method: 'POST', body: await f.arrayBuffer() });
+      const d = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      if (!r.ok || d.error) throw new Error(f.name + ': ' + (d.error || ('HTTP ' + r.status)));
+      if (f === pcb) boardPath = d.path;
+    }
+    if (boardPath) { await refreshBoards(boardPath); await loadServerBoard(boardPath); }
+    else if (B && B.path) { $('status').hidden = true; schLoad(B.path); }
+  } catch (err) { showStatus('Could not upload the project', String(err.message || err)); }
+}
+$('file').addEventListener('change', (e) => openFiles(e.target.files));
+document.querySelectorAll('[data-sample]').forEach((b) => b.addEventListener('click', async () => {
+  try { const r = await fetch(b.dataset.sample); if (!r.ok) throw new Error('HTTP ' + r.status); await loadText(await r.text(), b.dataset.sample); }
+  catch (err) { showStatus('Could not open ' + b.dataset.sample, String(err.message || err)); }
+}));
+const stage = $('stage');
+stage.addEventListener('dragover', (e) => { e.preventDefault(); $('drop').hidden = false; });
+stage.addEventListener('dragleave', (e) => { if (e.target === $('drop')) $('drop').hidden = true; });
+stage.addEventListener('drop', (e) => { e.preventDefault(); $('drop').hidden = true; openFiles(e.dataTransfer.files); });
+
+// ---------------------------------------------------------------- schematic tab (local twin: /api/schematic)
+// The server flattens the sheet hierarchy and names every wire and pin with the board's net, so a click
+// here selects the same copper in the 3D view and the other way round.
+const SVGNS = 'http://www.w3.org/2000/svg';
+let SCH = null, schCur = 0, schVB = null, schNets = null, schRef = null, schMode = '3d';
+const schRefSheet = new Map();          // ref -> sheet index
+const schNetSheets = new Map();         // net -> Set(sheet index)
+
+function svg(tag, attrs, parent) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function schText(parent, t, x, y, size, ang, just, cls) {
+  // KiCad: angle counter-clockwise, text height = size; 180/270 read the other way
+  let a = ((Math.round(ang) % 360) + 360) % 360;
+  let anchor = just && just.includes('left') ? 'start' : just && just.includes('right') ? 'end' : 'middle';
+  if (a === 180) { a = 0; anchor = anchor === 'start' ? 'end' : anchor === 'end' ? 'start' : anchor; }
+  if (a === 270) { a = 90; anchor = anchor === 'start' ? 'end' : anchor === 'end' ? 'start' : anchor; }
+  const base = just && just.includes('top') ? 'hanging' : just && just.includes('bottom') ? 'alphabetic' : 'central';
+  const e = svg('text', { x, y, 'font-size': (size * 1.15).toFixed(3), 'text-anchor': anchor, 'dominant-baseline': base }, parent);
+  if (a) e.setAttribute('transform', `rotate(${-a} ${x} ${y})`);
+  if (cls) e.setAttribute('class', cls);
+  e.textContent = t;
+  return e;
+}
+function arcPath(p) {
+  const [[ax, ay], [mx, my], [bx, by]] = p;
+  const d = 2 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my));
+  if (Math.abs(d) < 1e-9) return `M${ax} ${ay}L${bx} ${by}`;
+  const ux = ((ax * ax + ay * ay) * (my - by) + (mx * mx + my * my) * (by - ay) + (bx * bx + by * by) * (ay - my)) / d;
+  const uy = ((ax * ax + ay * ay) * (bx - mx) + (mx * mx + my * my) * (ax - bx) + (bx * bx + by * by) * (mx - ax)) / d;
+  const r = Math.hypot(ax - ux, ay - uy);
+  const cross = (mx - ax) * (by - ay) - (my - ay) * (bx - ax);
+  return `M${ax} ${ay}A${r} ${r} 0 0 ${cross > 0 ? 1 : 0} ${mx} ${my}A${r} ${r} 0 0 ${cross > 0 ? 1 : 0} ${bx} ${by}`;
+}
+
+function schDrawSheet(i) {
+  const sh = SCH.sheets[i], root = $('sch');
+  root.innerHTML = '';
+  const g = svg('g', {}, root);
+  const [W, H] = sh.paper;
+  svg('rect', { x: 0, y: 0, width: W, height: H, fill: 'none', stroke: 'var(--line)', 'stroke-width': 0.3 }, g);
+  for (const l of sh.lines) svg('polyline', { points: l.map((q) => q.join(',')).join(' '), class: 'b', 'stroke-dasharray': '1 1' }, g);
+  for (const b of sh.buses) svg('line', { x1: b[0][0], y1: b[0][1], x2: b[1][0], y2: b[1][1], class: 'bus' }, g);
+  for (const w of sh.wires) {
+    const a = { x1: w.p[0][0], y1: w.p[0][1], x2: w.p[1][0], y2: w.p[1][1] };
+    svg('line', { ...a, class: 'w', 'data-net': w.net }, g);
+    svg('line', { ...a, class: 'w-hit', 'data-k': 'w', 'data-net': w.net }, g);
+  }
+  for (const j of sh.junctions) svg('circle', { cx: j[0], cy: j[1], r: 0.45, class: 'jn' }, g);
+  for (const n of sh.noconn) svg('path', { d: `M${n[0] - .6} ${n[1] - .6}l1.2 1.2M${n[0] - .6} ${n[1] + .6}l1.2 -1.2`, class: 'b' }, g);
+  for (const t of sh.texts) schText(g, t.t, t.p[0], t.p[1], t.s, t.a, t.j);
+  for (const s of sh.symbols) {
+    const sg = svg('g', { class: 'sym', 'data-k': 'sym', 'data-ref': s.ref || '' }, g);
+    for (const pr of s.prims) {
+      const cls = 'b' + (pr.f === 'background' ? ' bg' : pr.f === 'outline' ? ' ol' : '');
+      if (pr.k === 'pl') svg('polyline', { points: pr.p.map((q) => q.join(',')).join(' '), class: cls }, sg);
+      else if (pr.k === 'c') svg('circle', { cx: pr.p[0], cy: pr.p[1], r: pr.r, class: cls }, sg);
+      else if (pr.k === 'a') svg('path', { d: arcPath(pr.p), class: cls }, sg);
+      else if (pr.k === 't') schText(sg, pr.t, pr.p[0], pr.p[1], pr.s, 0);
+    }
+    for (const pn of s.pins) {
+      if (pn.hide && s.power) continue;
+      const a = { x1: pn.p[0], y1: pn.p[1], x2: pn.e[0], y2: pn.e[1] };
+      svg('line', { ...a, class: 'pn', 'data-net': pn.net || '' }, sg);
+      if (!s.power && s.pins.length > 1 && !pn.hide)
+        schText(sg, pn.n, (pn.p[0] * 2 + pn.e[0]) / 3, (pn.p[1] * 2 + pn.e[1]) / 3 - 0.45, 0.8, 0, null, 'pnum');
+      if (!s.power) svg('line', { ...a, class: 'pin-hit', 'data-k': 'pin', 'data-ref': s.ref || '', 'data-pin': pn.n, 'data-net': pn.net || '' }, sg);
+    }
+    for (const t of s.props) schText(sg, t.t, t.p[0], t.p[1], t.s, t.a, t.j);
+  }
+  for (const l of sh.labels) {
+    const lg = svg('g', { class: 'lab', 'data-k': 'lab', 'data-net': l.net || '' }, g);
+    const a = ((Math.round(l.a) % 360) + 360) % 360;
+    const off = l.k === 'l' ? 0.3 : 1.0;
+    const dx = a === 0 ? off : a === 180 ? -off : 0, dy = a === 90 ? -off : a === 270 ? off : 0;
+    schText(lg, l.t, l.p[0] + dx, l.p[1] + dy, l.s, a, l.k === 'l' ? ['left', 'bottom'] : ['left']);
+    if (l.k !== 'l') svg('path', { d: `M${l.p[0]} ${l.p[1]}l${dx * 0.8 + (dy ? 0.6 : 0)} ${dy * 0.8 + (dx ? 0.6 : 0)}M${l.p[0]} ${l.p[1]}l${dx * 0.8 - (dy ? 0.6 : 0)} ${dy * 0.8 - (dx ? 0.6 : 0)}` }, lg);
+  }
+  for (const bx of sh.boxes) {
+    const bg = svg('g', { class: 'box', 'data-k': 'box', 'data-path': bx.path }, g);
+    svg('rect', { x: bx.p[0], y: bx.p[1], width: bx.s[0], height: bx.s[1] }, bg);
+    schText(bg, bx.name, bx.p[0], bx.p[1] - 0.8, 1.5, 0, ['left', 'bottom']);
+    schText(bg, bx.file, bx.p[0], bx.p[1] + bx.s[1] + 0.8, 1.2, 0, ['left', 'top']);
+    for (const pn of bx.pins) {
+      const left = Math.abs(pn.p[0] - bx.p[0]) < 0.01;
+      const t = schText(bg, pn.t, pn.p[0] + (left ? 0.8 : -0.8), pn.p[1], 1.27, 0, [left ? 'left' : 'right']);
+      t.setAttribute('data-net', pn.net || '');
+    }
+  }
+  schCur = i;
+  $('schSheet').value = String(i);
+  $('schUp').disabled = sh.parent === null || sh.parent === undefined;
+  $('schInfo').textContent = `${sh.symbols.filter((s) => !s.power).length} parts · page ${sh.page || '?'}`;
+  schApplyMarks();
+}
+
+function schFit() {
+  const sh = SCH.sheets[schCur], svgEl = $('sch');
+  const pts = [];
+  for (const w of sh.wires) pts.push(...w.p);
+  for (const s of sh.symbols) if (s.bbox) pts.push([s.bbox[0], s.bbox[1]], [s.bbox[2], s.bbox[3]]);
+  for (const b of sh.boxes) pts.push(b.p, [b.p[0] + b.s[0], b.p[1] + b.s[1]]);
+  let x0 = 0, y0 = 0, x1 = sh.paper[0], y1 = sh.paper[1];
+  if (pts.length) { x0 = Math.min(...pts.map((p) => p[0])) - 5; y0 = Math.min(...pts.map((p) => p[1])) - 5; x1 = Math.max(...pts.map((p) => p[0])) + 5; y1 = Math.max(...pts.map((p) => p[1])) + 5; }
+  const r = svgEl.getBoundingClientRect(), asp = (r.width || 1) / (r.height || 1);
+  let w = x1 - x0, h = y1 - y0;
+  if (w / h < asp) { const nw = h * asp; x0 -= (nw - w) / 2; w = nw; } else { const nh = w / asp; y0 -= (nh - h) / 2; h = nh; }
+  schVB = { x: x0, y: y0, w, h }; schSetVB();
+}
+function schSetVB() { $('sch').setAttribute('viewBox', `${schVB.x} ${schVB.y} ${schVB.w} ${schVB.h}`); }
+function schZoomTo(x, y, span) {
+  const r = $('sch').getBoundingClientRect(), asp = (r.width || 1) / (r.height || 1);
+  const h = span, w = span * asp;
+  schVB = { x: x - w / 2, y: y - h / 2, w, h }; schSetVB();
+}
+
+// pan / zoom / pinch and click on the schematic
+{
+  const el = $('sch');
+  const pts = new Map();
+  let down = null, pinch = null;
+  const toSvg = (cx, cy) => { const r = el.getBoundingClientRect(); return [schVB.x + (cx - r.left) / r.width * schVB.w, schVB.y + (cy - r.top) / r.height * schVB.h]; };
+  el.addEventListener('wheel', (e) => {
+    if (!schVB) return;
+    e.preventDefault();
+    const [x, y] = toSvg(e.clientX, e.clientY), k = Math.exp(e.deltaY * 0.0015);
+    schVB = { x: x - (x - schVB.x) * k, y: y - (y - schVB.y) * k, w: schVB.w * k, h: schVB.h * k }; schSetVB();
+  }, { passive: false });
+  el.addEventListener('pointerdown', (e) => {
+    if (!schVB) return;
+    el.setPointerCapture(e.pointerId);
+    pts.set(e.pointerId, [e.clientX, e.clientY]);
+    if (pts.size === 1) down = { x: e.clientX, y: e.clientY, vb: { ...schVB }, moved: false, target: e.target };
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a[0] - b[0], a[1] - b[1]), vb: { ...schVB }, c: toSvg((a[0] + b[0]) / 2, (a[1] + b[1]) / 2) }; down = null; }
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, [e.clientX, e.clientY]);
+    const r = el.getBoundingClientRect();
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()], k = pinch.d / Math.max(1, Math.hypot(a[0] - b[0], a[1] - b[1]));
+      const [cx, cy] = pinch.c;
+      schVB = { x: cx - (cx - pinch.vb.x) * k, y: cy - (cy - pinch.vb.y) * k, w: pinch.vb.w * k, h: pinch.vb.h * k }; schSetVB();
+    } else if (down) {
+      const dx = e.clientX - down.x, dy = e.clientY - down.y;
+      if (Math.hypot(dx, dy) > 4) down.moved = true;
+      if (down.moved) { schVB = { ...down.vb, x: down.vb.x - dx / r.width * down.vb.w, y: down.vb.y - dy / r.height * down.vb.h }; schSetVB(); }
+    }
+  });
+  const up = (e) => {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (down && !down.moved && e.type === 'pointerup') schClick(down.target, e);
+    if (pts.size === 0) down = null;
+  };
+  el.addEventListener('pointerup', up);
+  el.addEventListener('pointercancel', up);
+  el.addEventListener('dblclick', (e) => {
+    const b = e.target.closest('[data-k="box"]');
+    if (b) { const i = SCH.sheets.findIndex((s) => s.path === b.dataset.path); if (i >= 0) { schDrawSheet(i); schFit(); } }
+  });
+}
+
+function netIndex(name) { return B && B.nets ? B.nets.indexOf(name) : -1; }
+
+function schClick(target, e) {
+  const hit = target.closest ? target.closest('[data-k]') : null;
+  if (!hit) { highlightNet(-1); schRef = null; schApplyMarks(); return; }
+  const k = hit.dataset.k;
+  if (k === 'pin' && cohMarking) { cohPin(hit.dataset.ref, hit.dataset.pin, hit.dataset.net); return; }
+  if (k === 'pin' || k === 'w' || k === 'lab') {
+    const net = hit.dataset.net;
+    if (!net) return;
+    const i = netIndex(net);
+    if (i >= 0) select({ kind: 'copper', si: (layerObjs.findIndex((o) => o.L.type === 'copper')), net: i });
+    else { highlightNet(-1); schMarkNets([net]); }
+    schShowNetInfo(net, k === 'pin' ? `${hit.dataset.ref}.${hit.dataset.pin}` : '');
+    return;
+  }
+  if (k === 'sym') {
+    const ref = hit.dataset.ref;
+    const o = compObjs.find((c) => c.C.ref === ref);
+    schRef = ref;
+    if (o) select({ kind: 'comp', o }); else schApplyMarks();
+  }
+}
+function schShowNetInfo(net, pin) {
+  const dl = $('info'); dl.innerHTML = '';
+  const add = (k, v) => { const dt = document.createElement('dt'); dt.textContent = k; const dd = document.createElement('dd'); dd.textContent = v; dl.append(dt, dd); };
+  add('Net', net);
+  if (pin) add('Pin', pin);
+  const sheets = [...(schNetSheets.get(net) || [])].map((i) => SCH.sheets[i].name);
+  if (sheets.length) add('Sheets', sheets.join(', '));
+  if (netIndex(net) < 0) add('Board', 'no copper with this net name');
+}
+
+function schMarkNets(names) { schNets = names && names.length ? new Set(names) : null; schApplyMarks(); }
+function schApplyMarks() {
+  const root = $('sch');
+  if (!root.firstChild) return;
+  root.querySelectorAll('.hl,.hlsym,.markA').forEach((e) => e.classList.remove('hl', 'hlsym', 'markA'));
+  if (schNets) root.querySelectorAll('[data-net]').forEach((e) => { if (schNets.has(e.dataset.net) && !e.classList.contains('w-hit') && !e.classList.contains('pin-hit')) e.classList.add('hl'); });
+  if (schRef) root.querySelectorAll(`.sym[data-ref="${CSS.escape(schRef)}"]`).forEach((e) => e.classList.add('hlsym'));
+  if (cohMarking && cohA) root.querySelectorAll(`.sym[data-ref="${CSS.escape(cohA.ref)}"] .pn`).forEach((e, k, all) => {
+    const hitEl = root.querySelector(`.pin-hit[data-ref="${CSS.escape(cohA.ref)}"][data-pin="${CSS.escape(cohA.pin)}"]`);
+    if (hitEl && e.getAttribute('x1') === hitEl.getAttribute('x1') && e.getAttribute('y1') === hitEl.getAttribute('y1')) e.classList.add('markA');
+  });
+}
+function schFromSelect(s) {
+  if (!SCH) return;
+  if (s && s.kind === 'comp') {
+    schRef = s.o.C.ref;
+    if (schMode === 'sch') schGoto(schRef, null);
+    else schApplyMarks();
+  } else if (!s) { schRef = null; schApplyMarks(); }
+}
+function schGoto(ref, net) {
+  let i = ref ? schRefSheet.get(ref) : undefined;
+  if (i === undefined && net) { const ss = schNetSheets.get(net); if (ss) i = ss.has(schCur) ? schCur : [...ss][0]; }
+  if (i === undefined) return false;
+  if (i !== schCur) { schDrawSheet(i); schFit(); }
+  if (ref) {
+    const s = SCH.sheets[i].symbols.find((q) => q.ref === ref);
+    if (s && s.bbox) schZoomTo((s.bbox[0] + s.bbox[2]) / 2, (s.bbox[1] + s.bbox[3]) / 2, Math.max(40, (s.bbox[3] - s.bbox[1]) * 4));
+  }
+  schApplyMarks();
+  return true;
+}
+
+async function schLoad(path) {
+  SCH = null; $('modeSch').disabled = true; $('sch').innerHTML = '';
+  schRefSheet.clear(); schNetSheets.clear();
+  if (!API) return;
+  try {
+    const d = await api('/api/schematic?path=' + encodeURIComponent(path));
+    if (!d.found) { $('modeSch').title = 'No .kicad_sch next to the board. Drop the project folder (.kicad_sch, .kicad_pro) on the view to add it.'; if (schMode === 'sch') setMode('3d'); return; }
+    SCH = d;
+    const sel = $('schSheet'); sel.innerHTML = '';
+    const depth = (i) => { let n = 0, p = SCH.sheets[i].parent; while (p !== null && p !== undefined) { n++; p = SCH.sheets[p].parent; } return n; };
+    const names = new Set();
+    SCH.sheets.forEach((sh, i) => {
+      const o = document.createElement('option'); o.value = String(i);
+      o.textContent = ' '.repeat(depth(i)) + sh.name + (sh.page ? '  · ' + sh.page : '');
+      sel.appendChild(o);
+      for (const s of sh.symbols) if (s.ref && !s.power) { schRefSheet.set(s.ref, i); names.add(s.ref); }
+      for (const w of sh.wires) if (w.net) { if (!schNetSheets.has(w.net)) schNetSheets.set(w.net, new Set()); schNetSheets.get(w.net).add(i); names.add(w.net); }
+    });
+    const dlst = $('schFindList'); dlst.innerHTML = '';
+    for (const n of [...names].sort().slice(0, 4000)) { const o = document.createElement('option'); o.value = n; dlst.appendChild(o); }
+    $('modeSch').disabled = false; $('modeSch').title = SCH.root;
+    schDrawSheet(0);
+    if (schMode === 'sch') schFit();
+  } catch (err) { $('modeSch').title = 'Schematic: ' + (err.message || err); }
+}
+function setMode(m) {
+  schMode = m;
+  $('mode3d').classList.toggle('on', m === '3d'); $('modeSch').classList.toggle('on', m === 'sch');
+  $('schpane').hidden = m !== 'sch';
+  document.querySelector('.views').hidden = m === 'sch';
+  if (m === 'sch' && SCH) { if (!schVB) schFit(); if (schRef) schGoto(schRef, null); }
+  wake();
+}
+$('mode3d').addEventListener('click', () => setMode('3d'));
+$('modeSch').addEventListener('click', () => { if (SCH) setMode('sch'); });
+$('schSheet').addEventListener('change', () => { schDrawSheet(+$('schSheet').value); schFit(); });
+$('schFit').addEventListener('click', schFit);
+$('schUp').addEventListener('click', () => { const p = SCH && SCH.sheets[schCur].parent; if (p !== null && p !== undefined) { schDrawSheet(p); schFit(); } });
+$('schFind').addEventListener('change', () => {
+  const q = $('schFind').value.trim();
+  if (!q || !SCH) return;
+  if (schRefSheet.has(q)) { const o = compObjs.find((c) => c.C.ref === q); schRef = q; if (o) select({ kind: 'comp', o }); schGoto(q, null); return; }
+  if (schNetSheets.has(q)) { const i = netIndex(q); if (i >= 0) highlightNet(i); else schMarkNets([q]); schGoto(null, q); schShowNetInfo(q, ''); }
+});
+window.addEventListener('resize', () => { if (schMode === 'sch' && schVB) schFit(); });
+
+// ---------------------------------------------------------------- phase match (local twin: /api/coherence)
+let COH = null, cohPathSel = null, cohMarking = false, cohA = null, cohOpen = -1;
+const COH_MAXCH = 20;                  // 2..20 coherent branches per group
+const COH_COL = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948'];
+function cohGroupNets(g) { const s = new Set(); for (const ch of g.channels || []) for (const h of ch.hops || []) s.add(h.net); return s; }
+function cohFmt(v, d = 1) { return v === undefined || v === null ? '—' : (+v).toFixed(d); }
+function cohRender() {
+  const box = $('cohGroups'); box.innerHTML = '';
+  if (!COH) return;
+  const res = COH.result;
+  $('cohF0').value = (COH.spec.f0 / 1e9).toFixed(3);
+  $('cohTol').value = COH.spec.tol_deg;
+  $('cohNote').hidden = !(res && res.stackup_note); $('cohNote').textContent = res ? res.stackup_note : '';
+  (COH.spec.groups || []).forEach((g, gi) => {
+    const r = res && res.groups[gi];
+    const row = document.createElement('div'); row.className = 'cohg' + (gi === cohOpen ? ' sel' : ''); row.tabIndex = 0;
+    const nm = document.createElement('div'); nm.textContent = g.name;
+    const sm = document.createElement('small'); sm.textContent = (g.kind === 'delay' ? `delay · ${cohFmt((g.band_hz || 0) / 1e6, 1)} MHz` : 'absolute') + (g.note ? ' · ' + g.note : ''); nm.appendChild(sm);
+    const sp = document.createElement('span'); sp.className = 'mono';
+    const vd = document.createElement('span');
+    if (r) {
+      const bad = r.channels.some((c) => c.problems.length);
+      sp.textContent = `${cohFmt(r.spread_ps)} ps · ${cohFmt(r.spread_deg, 2)}°`;
+      vd.className = 'verdict ' + (bad ? 'warn' : r.ok ? 'ok' : 'bad'); vd.textContent = bad ? 'check' : r.ok ? 'OK' : 'over';
+    }
+    row.append(nm, sp, vd);
+    const open = () => { cohOpen = cohOpen === gi ? -1 : gi; cohRender(); cohHighlight(); };
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+    box.appendChild(row);
+  });
+  cohDetail();
+  cohEditSync();
+}
+function cohDetail() {
+  const d = $('cohDetail'); d.innerHTML = '';
+  if (!COH || cohOpen < 0 || !COH.result) return;
+  const r = COH.result.groups[cohOpen];
+  if (!r) return;
+  const t = document.createElement('table'); t.className = 'cohtab';
+  t.innerHTML = '<thead><tr><th>ch</th><th>mm</th><th>ps</th><th>° @f0</th><th>vias</th><th>+mm</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  const ph0 = r.channels.length ? r.channels[0].phase_deg : 0;
+  for (const c of r.channels) {
+    const tr = document.createElement('tr');
+    const cells = [c.name, cohFmt(c.length_mm, 2), cohFmt(c.delay_ps, 1), cohFmt(c.phase_deg - ph0, 1), String(c.vias), cohFmt(c.extend_mm, 2)];
+    cells.forEach((v) => { const td = document.createElement('td'); td.textContent = v; tr.appendChild(td); });
+    tr.title = `extend on ${c.extend_layer} to match the longest; phase relative to ${r.channels[0].name}` + (c.problems.length ? '\n' + c.problems.join('\n') : '');
+    if (c.problems.length) tr.style.color = 'var(--warn)';
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb); d.appendChild(t);
+  d.appendChild(cohPicture(r));
+  const p = document.createElement('p'); p.className = 'hint';
+  p.textContent = `limit ${cohFmt(r.limit_ps, 1)} ps (${COH.spec.tol_deg}° ${r.kind === 'delay' ? 'over ' + cohFmt(r.band_hz / 1e6, 1) + ' MHz' : 'at f0'})`;
+  d.appendChild(p);
+}
+// the branches of one group: copper paths on the board outline (colour per branch) and the phase per branch
+function cohPicture(r) {
+  const W = 300, H = 300, wrap = document.createElement('div');
+  const all = r.channels.flatMap((c) => c.draw || []);
+  if (!all.length) return wrap;
+  let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const q of all) { x0 = Math.min(x0, q[0], q[2]); x1 = Math.max(x1, q[0], q[2]); y0 = Math.min(y0, q[1], q[3]); y1 = Math.max(y1, q[1], q[3]); }
+  const pad = 4, sc = Math.min((W - 8) / (x1 - x0 + 2 * pad), (H - 8) / (y1 - y0 + 2 * pad));
+  const X = (x) => 4 + (x - x0 + pad) * sc, Y = (y) => 4 + (y - y0 + pad) * sc;
+  const map = svg('svg', { viewBox: `0 0 ${W} ${H}`, width: '100%', role: 'img', 'aria-label': 'Branch paths of ' + r.name });
+  map.style.border = '1px solid var(--line)'; map.style.borderRadius = '4px'; map.style.background = 'var(--bg)';
+  const col = (i) => COH_COL[i % COH_COL.length];
+  r.channels.forEach((c, i) => {
+    let dpath = '';
+    const viaPts = [];
+    for (const q of c.draw || []) {
+      if (q[4] === 'via') { viaPts.push(q); continue; }
+      if (q[4] === 'pad') continue;
+      dpath += `M${X(q[0]).toFixed(1)} ${Y(q[1]).toFixed(1)}L${X(q[2]).toFixed(1)} ${Y(q[3]).toFixed(1)}`;
+    }
+    const pth = svg('path', { d: dpath, stroke: col(i), 'stroke-width': 2, fill: 'none', 'stroke-linecap': 'round' }, map);
+    const tt = svg('title', {}, pth); tt.textContent = `${c.name}: ${c.length_mm.toFixed(2)} mm, ${c.delay_ps.toFixed(1)} ps`;
+    for (const q of viaPts) svg('circle', { cx: X(q[0]), cy: Y(q[1]), r: 2.5, fill: 'var(--bg)', stroke: col(i), 'stroke-width': 1.2 }, map);
+  });
+  wrap.appendChild(map);
+  // phase relative to the fastest branch, dashed line = tolerance
+  const d0 = Math.min(...r.channels.map((c) => c.delay_ps));
+  const deg = r.channels.map((c) => (c.delay_ps - d0) * 1e-12 * (r.kind === 'delay' ? r.band_hz : COH.result.f0) * 360);
+  const lim = COH.spec.tol_deg, top = Math.max(lim * 1.3, ...deg) * 1.15 || 1;
+  const BW = 300, BH = 150, n = r.channels.length, bw = (BW - 40) / n;
+  const bars = svg('svg', { viewBox: `0 0 ${BW} ${BH}`, width: '100%', role: 'img', 'aria-label': 'Phase per branch' });
+  const yb = (v) => BH - 18 - v / top * (BH - 34);
+  svg('line', { x1: 30, x2: BW - 4, y1: yb(lim), y2: yb(lim), stroke: 'var(--muted)', 'stroke-dasharray': '4 3' }, bars);
+  const lt = svg('text', { x: BW - 4, y: yb(lim) - 3, 'text-anchor': 'end', 'font-size': 9, fill: 'var(--muted)' }, bars); lt.textContent = `±${lim}°`;
+  deg.forEach((v, i) => {
+    const x = 34 + i * bw;
+    const rc = svg('rect', { x, y: yb(v), width: Math.max(2, bw - 4), height: Math.max(0.5, yb(0) - yb(v)), rx: 2, fill: col(i) }, bars);
+    const tt = svg('title', {}, rc); tt.textContent = `${r.channels[i].name}: ${v.toFixed(2)}° (${(r.channels[i].delay_ps - d0).toFixed(2)} ps)`;
+    const lb = svg('text', { x: x + (bw - 4) / 2, y: BH - 5, 'text-anchor': 'middle', 'font-size': n > 10 ? 7 : 9, fill: 'var(--fg)' }, bars); lb.textContent = r.channels[i].name;
+    if (n <= 10) { const vl = svg('text', { x: x + (bw - 4) / 2, y: yb(v) - 3, 'text-anchor': 'middle', 'font-size': 8.5, fill: 'var(--fg)' }, bars); vl.textContent = v.toFixed(1) + '°'; }
+  });
+  const yl = svg('text', { x: 4, y: 12, 'font-size': 9, fill: 'var(--muted)' }, bars);
+  yl.textContent = r.kind === 'delay' ? `° over ${(r.band_hz / 1e6).toFixed(1)} MHz vs fastest` : `° at f0 vs fastest`;
+  wrap.appendChild(bars);
+  return wrap;
+}
+function cohHighlight() {
+  if (!COH || cohOpen < 0) { highlightNet(-1); return; }
+  const names = cohGroupNets(COH.spec.groups[cohOpen]);
+  const idx = new Set([...names].map(netIndex).filter((i) => i >= 0));
+  highlightNet(idx.size ? idx : -1);
+  schMarkNets([...names]);
+}
+async function cohLoad(path) {
+  COH = null; cohOpen = -1; $('cohSec').hidden = !API; $('cohGroups').innerHTML = ''; $('cohDetail').innerHTML = '';
+  if (!API) return;
+  try { COH = await api('/api/coherence?path=' + encodeURIComponent(path)); cohPathSel = path; cohRender(); }
+  catch (err) { $('cohNote').hidden = false; $('cohNote').textContent = String(err.message || err); }
+}
+async function cohRun() {
+  if (!COH || !B || !B.path) return;
+  COH.spec.f0 = +$('cohF0').value * 1e9 || COH.spec.f0;
+  COH.spec.tol_deg = +$('cohTol').value || COH.spec.tol_deg;
+  $('cohRun').disabled = true;
+  try { COH = await api('/api/coherence', { path: B.path, spec: COH.spec }); cohRender(); cohHighlight(); }
+  catch (err) { $('cohNote').hidden = false; $('cohNote').textContent = String(err.message || err); }
+  finally { $('cohRun').disabled = false; }
+}
+$('cohRun').addEventListener('click', cohRun);
+$('cohF0').addEventListener('change', cohRun);
+$('cohTol').addEventListener('change', cohRun);
+
+// path marking: two pins of one net make a hop of the chosen group and channel
+function cohCurGroup() { return COH && COH.spec.groups[+$('cohGrp').value]; }
+function cohEditSync() {
+  if (!COH) return;
+  const gs = $('cohGrp'), keep = gs.value;
+  gs.innerHTML = '';
+  COH.spec.groups.forEach((g, i) => { const o = document.createElement('option'); o.value = String(i); o.textContent = g.name; gs.appendChild(o); });
+  if (keep && +keep < COH.spec.groups.length) gs.value = keep; else if (cohOpen >= 0) gs.value = String(cohOpen);
+  const g = cohCurGroup();
+  $('cohKind').value = g ? g.kind || 'absolute' : 'absolute';
+  $('cohBand').value = g && g.band_hz ? g.band_hz / 1e6 : 83.5;
+  const cs = $('cohCh'), keepc = cs.value; cs.innerHTML = '';
+  const n = g ? (g.channels || []).length : 0;
+  for (let i = 0; i <= Math.min(n, COH_MAXCH - 1); i++) { const o = document.createElement('option'); o.value = String(i); o.textContent = i < n ? g.channels[i].name : '+ new channel'; cs.appendChild(o); }
+  cs.value = keepc && +keepc <= n ? keepc : '0';
+  cohHops();
+}
+function cohHops() {
+  const g = cohCurGroup(), box = $('cohHops'); box.innerHTML = '';
+  const ch = g && g.channels[+$('cohCh').value];
+  if (!ch) return;
+  for (const h of ch.hops) { const d = document.createElement('div'); d.textContent = `${h.a[0]}.${h.a[1]} → ${h.b[0]}.${h.b[1]}  (${h.net})`; box.appendChild(d); }
+}
+function cohPin(ref, pin, net) {
+  if (!ref || !net) return;
+  if (!cohA || cohA.net !== net || (cohA.ref === ref && cohA.pin === pin)) {
+    cohA = { ref, pin, net };
+    $('cohMarkHint').textContent = `From ${ref}.${pin} (${net}): now the other end on the same net.`;
+    schApplyMarks(); return;
+  }
+  let g = cohCurGroup();
+  if (!g) { COH.spec.groups.push(g = { name: 'path', kind: 'absolute', band_hz: 83.5e6, channels: [] }); cohEditSync(); }
+  let ci = +$('cohCh').value;
+  if (ci >= g.channels.length) {
+    if (g.channels.length >= COH_MAXCH) { $('cohMarkHint').textContent = `At most ${COH_MAXCH} branches per group.`; cohA = null; return; }
+    g.channels.push({ name: 'CH' + (g.channels.length + 1), hops: [] }); ci = g.channels.length - 1;
+  }
+  g.channels[ci].hops.push({ net, a: [cohA.ref, cohA.pin], b: [ref, pin] });
+  $('cohMarkHint').textContent = `Hop ${cohA.ref}.${cohA.pin} → ${ref}.${pin} added. Next hop: click its first pin.`;
+  cohA = null;
+  cohEditSync(); $('cohCh').value = String(ci); cohHops(); schApplyMarks();
+}
+$('cohMark').addEventListener('click', () => {
+  cohMarking = !cohMarking; cohA = null;
+  $('cohMark').classList.toggle('on', cohMarking);
+  $('cohEdit').hidden = !cohMarking;
+  $('sch').classList.toggle('marking', cohMarking);
+  if (cohMarking) { if (SCH) setMode('sch'); cohEditSync(); }
+  else cohRun();
+});
+$('cohGrp').addEventListener('change', () => { cohOpen = +$('cohGrp').value; cohEditSync(); cohRender(); cohHighlight(); });
+$('cohCh').addEventListener('change', cohHops);
+$('cohKind').addEventListener('change', () => { const g = cohCurGroup(); if (g) g.kind = $('cohKind').value; });
+$('cohBand').addEventListener('change', () => { const g = cohCurGroup(); if (g) g.band_hz = +$('cohBand').value * 1e6; });
+$('cohNew').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || !COH) return;
+  const name = $('cohNew').value.trim(); if (!name) return;
+  COH.spec.groups.push({ name, kind: $('cohKind').value, band_hz: +$('cohBand').value * 1e6 || 83.5e6, channels: [] });
+  $('cohNew').value = '';
+  cohOpen = COH.spec.groups.length - 1; cohEditSync(); $('cohGrp').value = String(cohOpen); cohEditSync(); cohRender();
+});
+$('cohUndo').addEventListener('click', () => { const g = cohCurGroup(); const ch = g && g.channels[+$('cohCh').value]; if (ch && ch.hops.length) { ch.hops.pop(); if (!ch.hops.length) g.channels.splice(+$('cohCh').value, 1); cohEditSync(); } });
+$('cohDelGrp').addEventListener('click', () => { const gi = +$('cohGrp').value; if (COH && COH.spec.groups[gi]) { COH.spec.groups.splice(gi, 1); cohOpen = -1; cohEditSync(); cohRender(); } });
+// repeat: the refs of a channel are mapped by symbol uuid onto the other instances of the same sheet file
+$('cohRepeat').addEventListener('click', () => {
+  const g = cohCurGroup(), ci = +$('cohCh').value, ch = g && g.channels[ci];
+  if (!ch || !SCH) return;
+  const where = (ref) => { const i = schRefSheet.get(ref); return i === undefined ? null : { i, s: SCH.sheets[i].symbols.find((q) => q.ref === ref) }; };
+  const src = ch.hops.map((h) => [where(h.a[0]), where(h.b[0])]);
+  const file = (src.find((p) => p[0] && p[1]) || [])[0];
+  if (!file) return;
+  const srcSheet = SCH.sheets[file.i];
+  const siblings = SCH.sheets.map((s, i) => [s, i]).filter(([s, i]) => s.file === srcSheet.file && i !== file.i);
+  let made = 0, skipped = 0;
+  for (const [sib] of siblings) {
+    const map = (ref, at) => {
+      if (!at || SCH.sheets[at.i].file !== srcSheet.file) return { ref, same: true };
+      const t = sib.symbols.find((q) => q.uid === at.s.uid);
+      return t ? { ref: t.ref, sym: t } : null;
+    };
+    const hops = [];
+    let ok = true;
+    ch.hops.forEach((h, k) => {
+      const a = map(h.a[0], src[k][0]), b = map(h.b[0], src[k][1]);
+      if (!a || !b) { ok = false; return; }
+      const pinNet = (m, pin, fallback) => { if (m.same) return fallback; const p = m.sym.pins.find((q) => q.n === pin); return p ? p.net : null; };
+      const net = pinNet(a, h.a[1], null) || pinNet(b, h.b[1], null) || h.net;
+      if (a.same || b.same) { ok = false; return; }         // a hop that leaves the repeated sheet: needs its own marking
+      hops.push({ net, a: [a.ref, h.a[1]], b: [b.ref, h.b[1]] });
+    });
+    if (!ok || !hops.length) { skipped++; continue; }
+    const name = sib.name;
+    const ex = g.channels.findIndex((c) => c.name === name);
+    if (ex >= 0) g.channels[ex].hops = hops; else if (g.channels.length < COH_MAXCH) g.channels.push({ name, hops }); else { skipped++; continue; }
+    made++;
+  }
+  if (ch.name.startsWith('CH') && srcSheet) ch.name = srcSheet.name;
+  $('cohMarkHint').textContent = `Copied to ${made} sibling sheet${made === 1 ? '' : 's'}` + (skipped ? `, ${skipped} skipped (a hop leaves the sheet: mark those by hand)` : '') + '.';
+  cohEditSync();
+});
+
+applyTheme(); resize();
+// Render on demand: a frame only after something changed (camera, input, a new board, a field map).
+// While the view moves, the pixel ratio drops to 1 so weak GPUs (laptop, phone) stay fluid; the idle
+// frame afterwards is drawn sharp again. An idle board costs no GPU time at all.
+const PR_FULL = Math.min(window.devicePixelRatio, 2);
+let dirty = 8, moving = 0, prNow = PR_FULL, lastFrame = 0;
+const wake = (n = 8) => { dirty = Math.max(dirty, n); };
+controls.addEventListener('change', () => { wake(2); moving = 12; });
+for (const ev of ['pointerdown', 'pointermove', 'wheel', 'keydown', 'input', 'change', 'click', 'touchmove'])
+  window.addEventListener(ev, () => wake(), { passive: true });
+new MutationObserver(() => wake()).observe(document.body, { subtree: true, childList: true, attributes: true });
+window.addEventListener('resize', () => wake(4));
+const sceneAdd = scene.add.bind(scene);
+scene.add = (...o) => { wake(); return sceneAdd(...o); };
+renderer.setAnimationLoop(() => {
+  const changed = controls.update();
+  if (changed) { moving = 12; dirty = Math.max(dirty, 1); }
+  const now = performance.now();
+  if (dirty <= 0 && now - lastFrame < 500) return;     // idle: 2 frames/s pick up async changes (textures, results)
+  lastFrame = now;
+  const want = moving > 0 ? 1 : PR_FULL;
+  if (want !== prNow) { prNow = want; renderer.setPixelRatio(want); resize(); }
+  renderer.render(scene, camera);
+  dirty = Math.max(dirty - 1, 0); if (moving > 0) { moving--; if (moving === 0) dirty = Math.max(dirty, 1); }
+});
+
+const src = new URLSearchParams(location.search).get('board') || 'board.z2v.json';
+if (await initServer()) {
+  // the local twin serves the boards of its folder
+} else try {
+  const r = await fetch(src);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  await loadText(await r.text(), src);
+} catch (err) {
+  $('status').innerHTML = '<div><b>Open a board</b>Drop a .kicad_pcb or .z2v.json file here, or use “Open board file” in the inspector.</div>';
+}
+window.__viewer = { layout, setView, select, get B() { return B; }, compObjs, layerObjs };
+</script>
+
+</body>
+</html>

@@ -1,0 +1,50 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+
+# Required
+version: 2
+
+# formats for offline edition
+formats:
+  - htmlzip
+
+# Set the OS, Python version, and other tools you might need
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+  apt_packages:
+    # Octave must be installed for generating Octave docs
+    - octave
+
+    # openEMS and Python modules must be installed for generating Python docs
+    - build-essential
+    - git
+    - libhdf5-dev
+    - libtinyxml-dev
+    - libvtk9-dev
+    - libboost-all-dev
+    - libcgal-dev
+    - cmake
+
+  jobs:
+    # Make sure it runs just after ReadTheDocs created the Python virtualenv,
+    # but before it actually installs doc-src/requirements.txt (because we
+    # need to install CSXCAD and openEMS first).
+    pre_install:
+      - . $READTHEDOCS_VIRTUALENV_PATH/bin/activate
+      - ./update_openEMS.sh $HOME/opt/ --python --disable-GUI || cat build_*
+
+submodules:
+  include:
+    - fparser
+    - CSXCAD
+    - openEMS
+
+python:
+  install:
+    - requirements: doc-src/requirements.txt
+
+sphinx:
+  # Path to your Sphinx configuration file.
+  configuration: doc-src/conf.py

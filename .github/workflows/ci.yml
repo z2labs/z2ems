@@ -1,0 +1,816 @@
+name: "CI"
+
+on:
+  push:
+    branches:
+        - master
+        - CI_testing
+  pull_request:
+    branches:
+        - master
+
+jobs:
+  Linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      # Use "false" means a single failed build won't terminate other combinations
+      # in the matrix. This wastes CPU time, so it's meant for debugging only.
+      fail-fast: false
+
+      matrix:
+        os:
+          # name: OS name (only a name for humans to read).
+          # libc: userland libc, "GNU" or "musl"
+          #       (only a name for humans to read)
+          # ancient: true or false.
+          #          true: incompatible with GitHub's actions/checkout due to
+          #                node.js compatibility problem. Manual git checkout
+          #                required. Full dependency install done inline before
+          #                checkout (scripts/install_deps.sh not yet available).
+          #          false: use standard GitHub's actions/checkout and
+          #                 scripts/install_deps.sh for dependency installation.
+          # docker-image: string, image on DockerHub to use
+          - name: "CentOS 7"
+            libc: "GNU"
+            ancient: true
+            docker-image: "centos:7"
+
+          - name: "Ubuntu 14.04"
+            libc: "GNU"
+            ancient: true
+            docker-image: "ubuntu:14.04"
+
+          - name: "Debian oldstable"
+            libc: "GNU"
+            ancient: false
+            docker-image: "debian:oldstable"
+
+          - name: "Debian"
+            libc: "GNU"
+            ancient: false
+            docker-image: "debian:latest"
+
+          - name: "Ubuntu 22.04"
+            libc: "GNU"
+            ancient: false
+            docker-image: "ubuntu:22.04"
+
+          - name: "Ubuntu 24.04"
+            libc: "GNU"
+            ancient: false
+            docker-image: "ubuntu:24.04"
+
+          - name: "Ubuntu"
+            libc: "GNU"
+            ancient: false
+            docker-image: "ubuntu:latest"
+
+          - name: "Fedora"
+            libc: "GNU"
+            ancient: false
+            docker-image: "fedora:latest"
+
+          - name: "AlmaLinux 8"
+            libc: "GNU"
+            ancient: false
+            docker-image: "almalinux:8"
+
+          - name: "AlmaLinux 9"
+            libc: "GNU"
+            ancient: false
+            docker-image: "almalinux:9"
+
+          # AlmaLinux 10: vtk-devel, vtk-qt and octave not yet packaged for el10.
+          #- name: "AlmaLinux 10"
+          #  libc: "GNU"
+          #  ancient: false
+          #  docker-image: "almalinux:10"
+
+          # Waiting for upstream packages:
+          # https://bugzilla.redhat.com/show_bug.cgi?id=2374130
+          # https://bugzilla.redhat.com/show_bug.cgi?id=2419727
+          #
+          #- name: "AlmaLinux Latest"
+          #  libc: "GNU"
+          #  ancient: false
+          #  docker-image: "almalinux:latest"
+
+          # GUI is not supported on Alpine as VTK is built without Qt
+          - name: "Alpine, No GUI"
+            libc: "musl"
+            ancient: false
+            docker-image: "alpine:latest"
+
+    container:
+      image: ${{ matrix.os.docker-image }}
+      # allow mount/netns
+      options: "--cap-add CAP_SYS_ADMIN --cap-add NET_ADMIN --security-opt apparmor=unconfined"
+
+    name: "${{ matrix.os.libc }}/Linux (${{ matrix.os.name }})"
+
+    steps:
+      - name: Check for dockerenv file
+        # bash is not installed on Alpine at this point
+        shell: sh
+        run: (ls /.dockerenv && echo Found dockerenv) || exit 1
+
+      # ── EOL / ancient distros (CentOS 7, Ubuntu 14.04) ───────────────────
+      # These cannot use actions/checkout (node.js incompatibility) and require
+      # special package versions not handled by scripts/install_deps.sh. Keep
+      # the full inline install here; a manual git clone follows below.
+
+      - if: ${{ matrix.os.ancient }}
+        name: Install dependencies (EOL distros)
+        shell: sh
+        run: |
+          cat /etc/os-release
+
+          touch ~/.bash_profile  # set environment variables here
+
+          # Use a strict shell, stop the interpreter on various errors,
+          # so errors such as undefined variables are caught by CI/CD
+          # instead of ignored. Use printf because it contains options,
+          # which can be difficult to escape.
+          printf "%s\n" "set -euo pipefail" >> ~/.bash_profile
+
+          # For non-interactive shells such as "bash script.sh"
+          # Use a special ~/.bash_env file because ~/.bash_profile
+          # may contain commands that reset environment variables
+          # such as PATH.
+          printf "%s\n" "set -euo pipefail" >> ~/.bash_env
+          echo 'export BASH_ENV="$HOME/.bash_env"' >> ~/.bash_profile
+          echo 'export CXXFLAGS="-Wall -Wextra -Wno-error"' >> ~/.bash_profile
+
+          if grep -q "ID=debian" /etc/os-release || grep -q "ID=ubuntu" /etc/os-release; then
+            export DEBIAN_FRONTEND=noninteractive
+            # retry failed downloads 3 times
+            echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
+            apt-get update
+
+            # Ubuntu 14.04: install base packages available on the old repo
+            apt-get install -y build-essential git \
+                               libhdf5-dev libtinyxml-dev \
+                               qtbase5-dev \
+                               octave \
+                               python3-pip \
+                               python3-setuptools python3-numpy python3-matplotlib python3-h5py
+
+            apt-get install -y libvtk6-dev
+
+            # only for CI/CD test builds without networks.
+            apt-get install -y iproute2
+
+            # Ubuntu 14.04 has CMake 2 by default, but we require CMake 3
+            apt-get install -y cmake3
+
+            # Ubuntu 14.04 ships Boost 1.54 and is required by libcgal-dev,
+            # but we need Boost 1.55, so we install Boost 1.55 first, then
+            # install CGAL from source.
+            apt-get install -y boost1.55 boost1.55-dev
+
+            # CGAL v4.14.3 was old enough to be compatible with GCC 4.8. Otherwise,
+            # you get: The compiler feature "cxx_decltype_auto" is not known
+            # to CXX compiler "GNU" version 4.8.5.
+            apt-get install -y libgmp-dev libmpfr-dev
+            git clone $GITHUB_SERVER_URL/CGAL/cgal.git --depth=1 --branch=v4.14.3
+            cd cgal && mkdir build && cd build
+            cmake ../ -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/opt
+            make -j`nproc` && make install
+
+            # Must use Cython 3.0 or lower, since 3.1 uses f-string which is
+            # incompatible with Python 3.4.
+            pip3 install "cython<3.1"
+
+            # Ubuntu 14.04's matplotlib package is ancient, install the
+            # minimum version and its dependencies via pip. Note that the
+            # native build uses Python 3.4 while the venv build (tested
+            # later) uses Python 3.5 without these problems.
+            #
+            # pip's pyparsing is incompatible with Python 3.4
+            apt-get install -y python3-pyparsing
+
+            # same, newer cycler has incompatible type annotation
+            pip3 install "cycler==0.10.0"
+            pip3 install "matplotlib==2.1.0"
+          elif [ -f /etc/centos-release ]; then
+            # IPv6 on GitHub Actions is broken, causing random network failures
+            # if a CDN rosolves to IPv6.
+            echo "ip_resolve=4" >> /etc/yum.conf
+
+            # CentOS repos are EOL and desupported
+            sed -i 's|^mirrorlist|#mirrorlist|g; s|^#baseurl|baseurl|g; s|mirror.centos.org|vault.centos.org|g' \
+                /etc/yum.repos.d/CentOS-Base.repo
+
+            yum install -y centos-release-scl || true
+            sed -i 's|^mirrorlist|#mirrorlist|g; s|^#baseurl|baseurl|g;
+                    s|^# baseurl|baseurl|g; s|mirror.centos.org|vault.centos.org|g' \
+                /etc/yum.repos.d/CentOS-SCLo-scl.repo \
+                /etc/yum.repos.d/CentOS-SCLo-scl-rh.repo
+
+            yum install -y epel-release
+            yum install -y gcc gcc-c++ gmp-devel mpfr-devel \
+                           cmake3 git tinyxml-devel vtk-devel hdf5-devel octave \
+                           python3-devel python3-pip \
+                           python3-setuptools python3-setuptools_scm python3-Cython
+
+            # only for CI/CD test builds without networks.
+            yum install -y iproute
+
+            # use cmake3 instead of default cmake2
+            alternatives --install /usr/local/bin/cmake cmake /usr/bin/cmake3 99
+
+            # To upgrade GCC, one can use GCC 7 from centos-release-scl, required by CGAL.
+            # Even GCC 10+ is provided.
+            # Not used for now, since openEMS is still compatible with GCC 4.8! But we may
+            # need it in the future.
+            # yum install -y devtoolset-7-gcc devtoolset-7-gcc-c++
+            # alternatives --install /usr/local/bin/gcc gcc /opt/rh/devtoolset-7/root/usr/bin/gcc 99
+            # alternatives --install /usr/local/bin/g++ g++ /opt/rh/devtoolset-7/root/usr/bin/g++ 99
+
+            # boost-predef is only available on Boost 1.55 and later.
+            #   /usr/local/include/CGAL/config.h:210:10: fatal error: boost/predef.h:
+            #   No such file or directory
+            # We borrow a copy of Boost 1.58 from rh repo's mariadb backport package.
+            yum install -y rh-mariadb101-boost-devel
+
+            # copy rh repo's Boost to /usr/local because CMake doesn't support CPATH
+            ln -s /opt/rh/rh-mariadb101/root/usr/include/boost /usr/local/include/boost
+            mkdir /usr/local/lib64 && cd /usr/local/lib64
+            for i in /opt/rh/rh-mariadb101/root/usr/lib64/libboost*; do
+                ln -s $i /usr/local/lib64/
+            done
+
+            # setup.py is broken on CentOS 7, installing openEMS shows:
+            # error: Couldn't find a setup script in /tmp/easy_install-8fl5smm_/numpy-2.2.0.tar.gz
+            # Error: Process completed with exit code 1.
+            pip3 install numpy h5py matplotlib --user
+
+            # not package on CentOS
+            # CGAL v4.14.3 was old enough to be compatible with GCC 4.8. Otherwise,
+            # you get: The compiler feature "cxx_decltype_auto" is not known
+            # to CXX compiler "GNU" version 4.8.5.
+            git clone $GITHUB_SERVER_URL/CGAL/cgal.git --depth=1 --branch=v4.14.3
+            cd cgal && mkdir build && cd build
+            cmake ../ -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/opt
+            make -j`nproc` && make install
+          else
+            echo "Unknown EOL system!"
+            exit 1
+          fi
+
+          ip netns add no-network
+
+      # ── Modern distros: bootstrap before checkout ─────────────────────────
+      # Only git (and bash on Alpine) are needed at this stage. Everything else
+      # is installed via scripts/install_deps.sh after the repo is available.
+
+      - if: ${{ ! matrix.os.ancient }}
+        name: Set up environment and install git
+        # Must use sh: bash is not installed on Alpine yet
+        shell: sh
+        run: |
+          cat /etc/os-release
+
+          touch ~/.bash_profile ~/.bash_env
+          printf "%s\n" "set -euo pipefail" >> ~/.bash_profile
+          printf "%s\n" "set -euo pipefail" >> ~/.bash_env
+          echo 'export BASH_ENV="$HOME/.bash_env"' >> ~/.bash_profile
+          echo 'export CXXFLAGS="-Wall -Wextra -Wno-error"' >> ~/.bash_profile
+
+          if grep -q "ID=alpine" /etc/os-release; then
+            apk add bash git
+          elif grep -q "ID=fedora" /etc/os-release; then
+            dnf install -y git
+          elif grep -q 'ID="almalinux"' /etc/os-release; then
+            dnf install -y git
+          elif grep -q "ID=debian" /etc/os-release || grep -q "ID=ubuntu" /etc/os-release; then
+            echo 'Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y git
+          else
+            echo "Unknown system!"
+            exit 1
+          fi
+
+      - if: ${{ ! matrix.os.ancient }}
+        name: Checkout openEMS-Project.git
+        uses: actions/checkout@v4
+        with:
+          path: openEMS-Project
+          submodules: recursive
+
+          # checkout must be deep, not shallow.
+          # We need tags for "git describe", otherwise build fails.
+          fetch-depth: 0
+
+      - if: ${{ matrix.os.ancient }}
+        name: Checkout openEMS-Project.git (legacy system only)
+        run: |
+          echo "Clone $GITHUB_SHA from $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git clone --recursive $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git openEMS-Project
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          # force git to fetch all trees, otherwise "git checkout $GITHUB_SHA"
+          # fails with "fatal: reference is not a tree" for Pull Requests
+          git fetch --force $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git "+refs/heads/*:refs/remotes/origin/*"
+          git fetch --force $GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git "+refs/pull/*/merge:refs/remotes/origin/pr/*"
+          git checkout $GITHUB_SHA
+
+          # update git submodules, because the Pull Request may change it
+          git submodule init
+          git submodule update
+
+      - if: ${{ ! matrix.os.ancient }}
+        name: Install build dependencies
+        run: |
+          source ~/.bash_profile
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          # GUI is not supported on Alpine as VTK is built without Qt
+          if grep -q "ID=alpine" /etc/os-release; then
+            ./scripts/install_deps.sh --auto --python --with-ctb --disable-gui
+          else
+            ./scripts/install_deps.sh --auto --python --with-ctb
+          fi
+
+          # iproute: used for network namespace isolation in CI smoke tests
+          if grep -q "ID=alpine" /etc/os-release; then
+            apk add iproute2
+          elif grep -q "ID=debian" /etc/os-release || grep -q "ID=ubuntu" /etc/os-release; then
+            apt-get install -y iproute2
+          elif grep -q "ID=fedora" /etc/os-release || grep -q 'ID="almalinux"' /etc/os-release; then
+            dnf install -y iproute
+          fi
+
+          ip netns add no-network
+
+      - name: Build and install openEMS with --python-use-network=disable
+        run: |
+          source ~/.bash_profile
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          # GUI is not supported on Alpine as VTK is built without Qt
+          if grep -q "ID=alpine" /etc/os-release; then
+            gui_opt="--disable-GUI"
+          else
+            gui_opt=""
+          fi
+
+          # Ancient systems install their dependencies from the inline
+          # package lists above; scripts/install_deps.sh does not support
+          # them, so its check would only produce a spurious warning.
+          if [ "${{ matrix.os.ancient }}" = "true" ]; then
+            dep_opt="--skip-dep-check"
+          else
+            dep_opt=""
+          fi
+
+          run_without_network="ip netns exec no-network"
+
+          if $run_without_network \
+             ./update_openEMS.sh ~/opt --python $gui_opt $dep_opt \
+             --python-venv-mode=disable --python-use-network=disable
+          then
+            cat build_*.log
+          else
+            cat build_*.log
+            exit 1
+          fi
+
+          echo "addpath('~/opt/share/openEMS/matlab')" >> ~/.octaverc
+          echo "addpath('~/opt/share/CSXCAD/matlab')" >> ~/.octaverc
+
+      - name: Smoketest Octave execution
+        run: |
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/octave
+          octave MSL_NotchFilter.m
+
+      - name: Smoketest Python execution
+        run: |
+          source ~/.bash_profile
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/python
+          python3 MSL_NotchFilter.py
+
+      - name: Build and install openEMS in venv
+        run: |
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          # GUI is not supported on Alpine as VTK is built without Qt
+          if grep -q "ID=alpine" /etc/os-release; then
+            gui_opt="--disable-GUI"
+          else
+            gui_opt=""
+          fi
+
+          # see the note on --skip-dep-check in the previous build step
+          if [ "${{ matrix.os.ancient }}" = "true" ]; then
+            dep_opt="--skip-dep-check"
+          else
+            dep_opt=""
+          fi
+
+          if grep -q "ID=ubuntu" /etc/os-release && \
+            grep -q 'VERSION_ID="14.04"' /etc/os-release; then
+              # Use Python 3.5 instead of the default Python 3.4 because
+              # 3.5 is the latest available version on Ubuntu 14.04, and
+              # also because Python 3.5 is the first Python that supported
+              # type annotation, while Python 3.4 is locked out from most
+              # modern packages.
+              apt-get install -y curl python3.5-dev
+
+              # Ubuntu 14.04 is ancient, and the python3.5-venv package is
+              # broken. So the best approach is to install a bare Python 3.5
+              # interpreter from apt, and bootstrapping pip ourselves.
+              python3.5 -m venv ~/opt/venv --without-pip
+              curl -O https://bootstrap.pypa.io/pip/3.5/get-pip.py
+              source ~/opt/venv/bin/activate
+              python3.5 get-pip.py
+          fi
+
+          # set it here because "source ~/venv/bin/activate" is
+          # incompatible with set -euo pipefail
+          source ~/.bash_profile
+          if ./update_openEMS.sh ~/opt --python $gui_opt $dep_opt; then
+            cat build_*.log
+          else
+            cat build_*.log
+            exit 1
+          fi
+
+          echo "addpath('~/opt/share/openEMS/matlab')" >> ~/.octaverc
+          echo "addpath('~/opt/share/CSXCAD/matlab')" >> ~/.octaverc
+
+      - name: Smoketest Python execution in venv
+        run: |
+          source ~/opt/venv/bin/activate
+          source ~/.bash_profile
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/python
+          python3 MSL_NotchFilter.py
+
+  macOS:
+    name: "macOS (ARM, latest)"
+
+    runs-on: macos-latest
+    steps:
+      - name: Set up build environment
+        run: |
+          # Use a strict shell, stop the interpreter on various errors,
+          # so errors such as undefined variables are caught by CI/CD
+          # instead of ignored. Use printf because it contains options,
+          # which can be difficult to escape.
+          printf "%s\n" "set -euo pipefail" >> ~/.zprofile
+
+          # For #!/bin/bash scripts.
+          # To ensure ~/.bash_env is executed, BASH_ENV must be set for the
+          # current default shell of which bash is launched from.
+          # Use a special ~/.bash_env file because ~/.bash_profile
+          # may contain commands that reset environment variables
+          # such as PATH.
+          printf "%s\n" "set -euo pipefail" >> ~/.bash_env
+          echo 'export BASH_ENV="$HOME/.bash_env"' >> ~/.zprofile
+
+          # GitHub's default ~/.bash_profile contains:
+          #
+          #     POWERSHELL_DISTRIBUTION_CHANNEL=GitHub-Actions-macos15
+          #
+          # WITHOUT ending with "\n". Add a "\n" manually, otherwise
+          # the command is invalid.
+          printf "\n%s\n" "set -euo pipefail" >> ~/.bash_profile
+
+      - name: Checkout openEMS-Project.git
+        uses: actions/checkout@v4
+        with:
+          path: openEMS-Project
+          submodules: recursive
+
+          # checkout must be deep, not shallow.
+          # We need tags for "git describe", otherwise build fails.
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          source ~/.zprofile
+          cd $GITHUB_WORKSPACE/openEMS-Project
+          ./scripts/install_deps.sh --auto --python --with-ctb
+
+      - name: Build and install openEMS with --python-use-network=disable
+        run: |
+          source ~/.zprofile
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          if ./update_openEMS.sh ~/opt --python \
+             --python-venv-mode=disable --python-use-network=disable
+          then
+            cat build_*.log
+          else
+            cat build_*.log
+            exit 1
+          fi
+
+          echo "addpath('~/opt/share/openEMS/matlab')" >> ~/.octaverc
+          echo "addpath('~/opt/share/CSXCAD/matlab')" >> ~/.octaverc
+
+      - name: Smoketest Octave execution
+        run: |
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/octave
+          octave MSL_NotchFilter.m
+
+      - name: Smoketest Python execution
+        run: |
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/python
+          python3 MSL_NotchFilter.py
+
+      - name: Build and install openEMS in venv
+        run: |
+          # remove Python dependencies to see if venv really works
+          pip3 uninstall -y CSXCAD openEMS --break-system-packages
+          brew remove python-setuptools cython numpy python-matplotlib
+
+          source ~/.zprofile
+          cd $GITHUB_WORKSPACE/openEMS-Project
+
+          if ./update_openEMS.sh ~/opt --python; then
+            cat build_*.log
+          else
+            cat build_*.log
+            exit 1
+          fi
+
+      - name: Smoketest Python execution in venv
+        run: |
+          cd $GITHUB_WORKSPACE/openEMS-Project/openEMS/.github/smoketests/python
+          source ~/opt/venv/bin/activate
+          python3 MSL_NotchFilter.py
+
+  FreeBSD:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        machine:
+          - name: "FreeBSD 14.2"
+            os: freebsd
+            arch: x86-64
+            version: '14.2'
+
+          # macOS already tests ARM for us, so disable the slow ARM emulator
+          # for now
+          #- name: "FreeBSD 14.2 (ARM emulator)"
+          #  os: freebsd
+          #  arch: arm64
+          #  version: '14.2'
+
+    name: "${{ matrix.machine.name }}"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+          # checkout must be deep, not shallow.
+          # We need tags for "git describe", otherwise build fails.
+          fetch-depth: 0
+
+      - name: Test in FreeBSD ${{ matrix.machine.version }} ${{ matrix.machine.arch }}
+        uses: cross-platform-actions/action@v0.26.0
+        with:
+          cpu_count: 4
+          architecture: ${{ matrix.machine.arch }}
+          operating_system: ${{ matrix.machine.os }}
+          version: ${{ matrix.machine.version }}
+          sync_files: runner-to-vm
+          run: |
+            echo "Install dependencies..."
+
+            # bash is required to run scripts/install_deps.sh
+            sudo pkg install -y bash
+
+            # Install core deps. python3 is included in core so that the second
+            # call can derive the version prefix for Python package names.
+            ./scripts/install_deps.sh --auto --with-ctb
+
+            # Python packages use a version prefix (py311-, py313-, …) that can
+            # only be determined after python3 is installed (done above).
+            ./scripts/install_deps.sh --auto --python
+
+            # Cython package name varies across FreeBSD quarterly snapshots; use pip
+            pip install --user --break-system-packages cython
+
+            echo "Build and install openEMS with --python-use-network=disable..."
+
+            if ./update_openEMS.sh ~/opt --python \
+               --python-venv-mode=disable --python-use-network=disable
+            then
+              cat build_*.log
+            else
+              cat build_*.log
+              exit 1
+            fi
+
+            echo "addpath('~/opt/share/openEMS/matlab')" >> ~/.octaverc
+            echo "addpath('~/opt/share/CSXCAD/matlab')" >> ~/.octaverc
+
+            echo "Smoketest Octave execution..."
+            cd openEMS/.github/smoketests/octave/
+            octave MSL_NotchFilter.m
+            cd -
+
+            echo "Smoketest Python execution..."
+            cd openEMS/.github/smoketests/python
+            python3 MSL_NotchFilter.py
+            cd -
+
+            echo "Build and install openEMS in venv..."
+            # remove Python dependencies to see if venv really works
+            pip uninstall -y CSXCAD openEMS cython --break-system-packages
+            PYVER=$(python3 -c "import sys; print('py{}{}'.format(*sys.version_info[:2]))")
+            sudo pkg remove -y ${PYVER}-pip \
+                               ${PYVER}-setuptools ${PYVER}-wheel ${PYVER}-setuptools-scm \
+                               ${PYVER}-numpy ${PYVER}-h5py ${PYVER}-matplotlib
+
+            if ./update_openEMS.sh ~/opt --python; then
+              cat build_*.log
+            else
+              cat build_*.log
+              exit 1
+            fi
+
+            echo "Smoketest Python execution in venv..."
+            cd openEMS/.github/smoketests/python
+            . ~/opt/venv/bin/activate
+            python3 MSL_NotchFilter.py
+
+  Windows:
+    runs-on: windows-latest
+
+    strategy:
+      # Use "false" means a single failed build won't terminate other combinations
+      # in the matrix. This wastes CPU time, but is an important debugging tool to
+      # prevent a single broken platform from stopping the whole matrix.
+      fail-fast: false
+
+      matrix:
+        toolchain:
+          # name: toolchain name (only a name for humans to read).
+          # CC, CXX: C/C++ compiler, environment variables
+          - name: "MSVC"
+            CC: "cl"
+            CXX: "cl"
+
+          - name: "clang-cl"
+            CC: "clang-cl"
+            CXX: "clang-cl"
+
+    env:
+      CC: "${{ matrix.toolchain.CC }}"
+      CXX: "${{ matrix.toolchain.CXX }}"
+      CFLAGS: "/D_WIN32_WINNT=0x0601"
+      CXXFLAGS: "/D_WIN32_WINNT=0x0601"
+
+      VCPKG_CACHE_PATH: "${{ github.workspace }}/vcpkg-cache/"
+      VCPKG_BINARY_CACHE_PATH: "${{ github.workspace }}/vcpkg-cache/binary"
+      VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg-cache/binary,readwrite"
+      VCPKG_ASSET_CACHE_PATH: "${{ github.workspace }}/vcpkg-cache/asset"
+      X_VCPKG_ASSET_SOURCES: "x-azurl,file://${{ github.workspace }}/vcpkg-cache/asset,readwrite"
+
+    name: "Windows (${{ matrix.toolchain.name }}, latest)"
+
+    steps:
+      - name: Locate Visual Studio installation
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) { throw "Visual Studio with VC tools not found via vswhere" }
+          echo "VS_ROOT_DIR=$vsPath" >> $env:GITHUB_ENV
+
+      - name: Checkout openEMS-Project.git
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # checkout must be deep, not shallow.
+          # We need tags for "git describe", otherwise build fails.
+          fetch-depth: 0
+
+      # It doesn't really work, because MSVC itself doesn't support long path.
+      # But for future-proofing (it does work for clang).
+      - name: Enable long paths
+        run: |
+          New-ItemProperty -Path "HKLM:/SYSTEM/CurrentControlSet/Control/FileSystem" `
+                           -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+
+      - name: Create vcpkg cache directories
+        run: |
+          mkdir -p "$env:VCPKG_CACHE_PATH"
+          mkdir -p "$env:VCPKG_BINARY_CACHE_PATH"
+          mkdir -p "$env:VCPKG_ASSET_CACHE_PATH"
+
+      - name: Restore vcpkg cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VCPKG_CACHE_PATH }}
+          # almost always nonexistent
+          key: "Windows - ${{ matrix.toolchain.name }} - ${{ github.sha }}"
+          # use GitHub's fallback feature to pick the latest cache with this prefix
+          restore-keys: |
+            Windows - ${{ matrix.toolchain.name }}
+
+      - name: Build and install fparser
+        run: |
+          & "$env:VS_ROOT_DIR/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+
+          cd "$env:GITHUB_WORKSPACE/fparser"
+          mkdir build && cd build
+          cmake ../ -GNinja -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=ON `
+                    -DCMAKE_BUILD_TYPE=Release `
+                    -DCMAKE_INSTALL_PREFIX="$HOME/opt"
+
+          cmake --build ./ --parallel
+          cmake --install ./ --parallel 8
+
+      - name: Build and install CSXCAD
+        run: |
+          & "$env:VS_ROOT_DIR/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+
+          cd "$env:GITHUB_WORKSPACE/CSXCAD"
+          mkdir build && cd build
+          cmake ../ -GNinja `
+                    -DCMAKE_BUILD_TYPE=Release `
+                    -DCMAKE_INSTALL_PREFIX="$HOME/opt" `
+                    -DFPARSER_ROOT_DIR="$HOME/opt" `
+                    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_HOST_TRIPLET="x64-windows-release" `
+                    -DVCPKG_TARGET_TRIPLET="x64-windows-release"
+
+          cmake --build ./ --parallel
+          cmake --install ./ --parallel 8
+
+      - name: Build and install openEMS
+        run: |
+          & "$env:VS_ROOT_DIR/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+
+          cd "$env:GITHUB_WORKSPACE/openEMS"
+          mkdir build && cd build
+          cmake ../ -GNinja `
+                    -DCMAKE_BUILD_TYPE=Release `
+                    -DCMAKE_INSTALL_PREFIX="$HOME/opt" `
+                    -DFPARSER_ROOT_DIR="$HOME/opt" `
+                    -DCSXCAD_ROOT_DIR="$HOME/opt" `
+                    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_HOST_TRIPLET="x64-windows-release" `
+                    -DVCPKG_TARGET_TRIPLET="x64-windows-release"
+
+          cmake --build ./ --parallel
+          cmake --install ./ --parallel 8
+
+      - name: Build and install QCSXCAD
+        run: |
+          & "$env:VS_ROOT_DIR/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+
+          cd "$env:GITHUB_WORKSPACE/QCSXCAD"
+          mkdir build && cd build
+          cmake ../ -GNinja `
+                    -DCMAKE_BUILD_TYPE=Release `
+                    -DCMAKE_INSTALL_PREFIX="$HOME/opt" `
+                    -DCSXCAD_ROOT_DIR="$HOME/opt" `
+                    -DVCPKG_INSTALLED_DIR="D:/vi" `
+                    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_HOST_TRIPLET="x64-windows-release" `
+                    -DVCPKG_TARGET_TRIPLET="x64-windows-release"
+
+          cmake --build ./ --parallel
+          cmake --install ./ --parallel 8
+
+      - name: Build and install AppCSXCAD
+        run: |
+          & "$env:VS_ROOT_DIR/Common7/Tools/Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+
+          cd "$env:GITHUB_WORKSPACE/AppCSXCAD"
+          mkdir build && cd build
+          cmake ../ -GNinja `
+                    -DCMAKE_BUILD_TYPE=Release `
+                    -DCMAKE_INSTALL_PREFIX="$HOME/opt" `
+                    -DCSXCAD_ROOT_DIR="$HOME/opt" `
+                    -DQCSXCAD_ROOT_DIR="$HOME/opt" `
+                    -DVCPKG_INSTALLED_DIR="D:/vi" `
+                    -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+                    -DVCPKG_HOST_TRIPLET="x64-windows-release" `
+                    -DVCPKG_TARGET_TRIPLET="x64-windows-release"
+
+          cmake --build ./ --parallel
+          cmake --install ./ --parallel 8
+
+      - name: Save vcpkg cache
+        if: always()  # save even after a build failure.
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_CACHE_PATH }}
+          # GitHub cache is immutable and can't be overwritten
+          # save a new cache key every time
+          key: Windows - ${{ matrix.toolchain.name }} - ${{ github.sha }}
