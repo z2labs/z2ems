@@ -630,6 +630,14 @@ jobs:
           path: z2stage/
           retention-days: 30
 
+      - name: Checksums
+        run: |
+          # the KiCad plugin's engine installer checks the download against this (and GitHub's asset digest)
+          $files = @("${{ steps.pkg.outputs.engine }}.zip", "${{ steps.pkg.outputs.name }}.zip")
+          $lines = foreach ($f in $files) { "{0}  {1}" -f (Get-FileHash -Algorithm SHA256 $f).Hash.ToLower(), $f }
+          Set-Content -Path SHA256SUMS.txt -Value $lines -Encoding ASCII
+          Get-Content SHA256SUMS.txt
+
       - name: Create or update GitHub Release
         if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
         uses: softprops/action-gh-release@v2
@@ -640,12 +648,13 @@ jobs:
           files: |
             ${{ steps.pkg.outputs.engine }}.zip
             ${{ steps.pkg.outputs.name }}.zip
+            SHA256SUMS.txt
           body: |
             Windows 64-bit packages of **Z2 EMS ${{ steps.pkg.outputs.tag }}**.
 
-            - `Z2EMS_engine_*.zip`: the engine package for the KiCad plugin ([z2labs/z2ems-kicad](https://github.com/z2labs/z2ems-kicad)) and for `twin/kicad_sim.py`: openEMS with the CPU and CUDA engines, a private Python with the CSXCAD/openEMS bindings and numpy, h5py, matplotlib, scipy and shapely, `twin/`, `gui/` and `examples/`. Unzip to `%LOCALAPPDATA%\Z2EMS\engine` (the plugin looks there first). See `README.txt` inside.
+            - `Z2EMS_engine_*.zip`: the engine package for the KiCad plugin ([z2labs/z2ems-kicad](https://github.com/z2labs/z2ems-kicad)) and for `twin/kicad_sim.py`: openEMS with the CPU and CUDA engines, a private Python with the CSXCAD/openEMS bindings and numpy, h5py, matplotlib, scipy and shapely, `twin/`, `gui/` and `examples/`. The KiCad plugin downloads and installs it on first use (after asking); by hand: unzip so that `%LOCALAPPDATA%\Z2EMS\engine` holds `bin\`, `python\` and `twin\`. See `README.txt` inside.
             - `openEMS_x64_*_msvc.zip`: the plain openEMS package of this build (binaries, Octave/Matlab interface, Python wheels cp313/cp314, headers and import libraries).
 
-            The CUDA engine (`--engine=cuda`) needs an NVIDIA GPU of the Pascal generation (GTX 10xx) or newer and a current driver; without one the CPU engines are used.
+            The CUDA engine (`--engine=cuda`) needs an NVIDIA GPU of the Pascal generation (GTX 10xx) or newer and a current driver; without one the CPU engines are used. On Windows the CUDA engine is built and packaged by CI but not yet tested on NVIDIA hardware: treat it as experimental and report problems in the issues.
 
             openEMS and CSXCAD are by Thorsten Liebig and contributors (https://openEMS.de); documentation: https://docs.openems.de

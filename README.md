@@ -16,8 +16,10 @@ contributors) with the parts a PCB designer needs on top:
 - **CUDA engine** (`--engine=cuda`): the FDTD update, the absorbing boundaries, excitation, lumped RLC and
   dispersive materials on an NVIDIA GPU, with a memory guard that catches corrupted GPU memory instead of
   returning a wrong result.
-- **Conformal PEC**: metal edges that do not fall on a mesh line are handled by a contour-path correction,
-  so a 50 Ω microstrip comes out right with four mesh lines across the strip.
+- **Conformal PEC** (contour-path FDTD after Yu and Mittra, 2001): a Yee edge partly covered by metal
+  keeps the free fraction of its length, so metal edges that do not fall on a mesh line are not snapped
+  to it. On the 50 Ω test coupon this moves Z0 from 50.37 Ω (staircase) to 49.50 Ω, against 49.35 Ω
+  from the closed-form formula. On by default in the twin, `Z2_CONFORMAL=0` turns it off.
 - **Viewer and local server** (`gui/`): a browser 3D view of the board (exploded layers, components) that
   can also start runs and show S-parameters, field maps and far field.
 - **KiCad plugin**: [z2labs/z2ems-kicad](https://github.com/z2labs/z2ems-kicad) drives all of the above from
