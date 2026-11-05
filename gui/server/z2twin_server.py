@@ -230,20 +230,10 @@ class Twin:
                               pad=[float(v) for v in (*pad.pts.min(0), *pad.pts.max(0))]))
 
     def _ports(self, b, specs):
-        """ Port definitions from the viewer's port list: each port is re-made on the server from its pad
-            (ref + net + layer), so the geometry always matches the board the engine sees. """
-        out = []
-        for i, sp in enumerate(specs):
-            pads = [s for s in b.shapes if s.kind == 'pad' and s.ref == sp['ref'] and (not sp.get('net') or s.net == sp['net'])
-                    and s.layer in (b.copper_layers[0], b.copper_layers[-1]) and (not sp.get('layer') or s.layer == sp['layer'])]
-            if sp.get('pad_no'):
-                pads = [s for s in pads if s.pad == sp['pad_no']] or pads
-            if not pads:
-                raise ValueError('port %d: no outer-layer pad %s %s' % (i + 1, sp['ref'], sp.get('net', '')))
-            port = ks.make_port(b, pads[0], i + 1)
-            port['z0'] = float(sp.get('z0') or 50.0)
-            out.append(port)
-        return out
+        """ Port definitions from the plugin / viewer: each port is re-made on the server from its pads
+            (kicad_sim.port_from_spec: + pad and - pads / plane), so the geometry always matches the board
+            the engine sees. """
+        return [ks.port_from_spec(b, sp, i + 1) for i, sp in enumerate(specs)]
 
     def mesh(self, req):
         """ Mesh preview: the lines build() would hand to the engine for these ports and fmax, in board
@@ -265,8 +255,11 @@ class Twin:
         (bx0, bx1), (by0, by1) = b.BoundingBox()[:2]
         return dict(x=X, y=Y, z=Z, res_mm=res, bbox=[bx0, by0, bx1, by1],
                     layers_z=[dict(layer=c, z=b.SheetZ(c)) for c in b.copper_layers],
-                    ports=[dict(number=q['number'], ref=q.get('ref'), net=q.get('net'), start=list(map(float, q['start'])),
-                                stop=list(map(float, q['stop'])), axis=q['normal_axis']) for q in ports],
+                    ports=[dict(number=q['number'], ref=q.get('ref'), net=q.get('net'), kind=q.get('kind', 'vertical'),
+                                start=list(map(float, q['start'])), stop=list(map(float, q['stop'])), axis=q['normal_axis'],
+                                ref_layer=q.get('ref_layer'), ref_net=q.get('ref_net'),
+                                subs=[dict(start=list(map(float, g['start'])), stop=list(map(float, g['stop'])), axis=g['axis'],
+                                           minus=g['minus']) for g in q.get('subs', [])]) for q in ports],
                     quality=ks.mesh_quality([X, Y, Z], fmax, er, res))
 
     def run(self, req):
@@ -325,7 +318,8 @@ class Twin:
                 variant = {'cpu': ks.DEFAULT_VARIANT, 'cuda': 'cuda'}.get(eng, 'auto')
                 res = ks.simulate(path, None, fmin, fmax, job.out, fab=r.get('fab'), variant=variant, threads=int(r.get('threads') or self_threads()),
                                   coarse=float(r.get('coarse', 1.0)), nf=nf, log=log, materials=mat, ports=job.ports,
-                                  progress=progress, fields=fields, converge=bool(r.get('converge')))
+                                  progress=progress, fields=fields, converge=bool(r.get('converge')),
+                                  excite=r.get('excite') or None)
                 if res.get('fields') and res['fields'].get('maps'):          # map paths relative to the served folder
                     res['fields']['base'] = os.path.relpath(job.out, self.root).replace(os.sep, '/')
                     json.dump(res, open(os.path.join(job.out, 'result.json'), 'w'), indent=1)
@@ -376,6 +370,22 @@ def _authorized(handler):
             cands.append(v)
     cands += parse_qs(urlparse(handler.path).query).get('token', [])
     return any(c and hmac.compare_digest(c, TOKEN) for c in cands)
+
+
+_CUDA_PROBE = None
+
+
+def _cuda_state():
+    """ ks.cuda_available() runs the engine's --help (seconds on a cold disk); /api/health must answer at once
+        (the plugin waits 3 s per port when it looks for a server), so the probe runs in the background and
+        health reports None until it is done. """
+    global _CUDA_PROBE
+    if ks._CUDA_OK is not None:
+        return ks._CUDA_OK
+    if _CUDA_PROBE is None:
+        _CUDA_PROBE = threading.Thread(target=ks.cuda_available, daemon=True)
+        _CUDA_PROBE.start()
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -435,7 +445,8 @@ class Handler(BaseHTTPRequestHandler):
                 eng = ks.VARIANTS[ks.DEFAULT_VARIANT]['exe']
                 return self._send(200, dict(ok=True, folder=_TWIN.root, engine=eng, engine_found=os.path.exists(eng) or bool(eng and os.sep not in eng),
                                             variant=ks.DEFAULT_VARIANT, threads=_TWIN.threads,
-                                            cuda=ks.cuda_available(), cuda_engine=ks.VARIANTS['cuda']['exe']))
+                                            cuda=_cuda_state(), cuda_engine=ks.VARIANTS['cuda']['exe'],
+                                            ports_api=2))     # 2: + pad / - pads or plane (kicad_sim.port_from_spec)
             if u.path == '/api/boards':
                 return self._send(200, dict(boards=_TWIN.list_boards(), folder=_TWIN.root))
             if u.path == '/api/runs':

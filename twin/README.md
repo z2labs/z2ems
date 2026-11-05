@@ -10,7 +10,7 @@ output and, for a two-port line, Z0 and effective permittivity.
 
 | option | meaning |
 |---|---|
-| `--port REF` | footprint whose outer-layer pad (not a ground net) is a port; repeat per port |
+| `--port SPEC` | a port, repeat per port: `REF` (that footprint's signal pad, vertical port to the nearest reference copper below), `REF:PAD/GPAD,GPAD` (gap port from those ground pads to the pad, e.g. `J1:1/2,3,4,5`, `U3:7/6,8`; `GREF:GPAD` for another footprint's pad), `REF:PAD@LAYER` (vertical port to that layer, e.g. `ANT1:1@In1.Cu`) |
 | `--fmin/--fmax` | frequency range in Hz |
 | `--copper sheet` | zero-thickness copper on the dielectric face (default, fast) |
 | `--copper solid` | copper with its thickness (slower: thin cells) |
@@ -24,9 +24,18 @@ per excitation with the openEMS model and probes.
 
 ## How the model is built
 
-- **Port**: at the pad edge that faces the nearest board edge, inset 0.1 mm into
-  the pad, from the sheet of the nearest copper layer below that has copper of
-  another net (the reference plane) up to the pad sheet.
+- **Ports**: a port is a + pad and a - reference.
+  - *Gap port* (- = ground pads on the same layer: an edge connector's GND pads,
+    an IC's neighbouring GND pins): one lumped sub-port in the copper plane per
+    ground pad, across the real gap (from the + pad edge to the nearest copper
+    of the ground net in that direction, so a ground pour between the pads
+    counts), each with n·Z0, driven together; the port voltage is their mean,
+    the port current their sum. On the BWSMA edge-launch coupon the gap ports
+    give |S21| -0.41 / -1.88 dB at 1 / 6 GHz against -0.40 / -1.77 dB with
+    vertical ports.
+  - *Vertical port* (- = a plane, or the nearest reference copper): at the pad
+    edge that faces the nearest board edge, inset 0.1 mm into the pad, from
+    the sheet of the reference layer below up to the pad sheet.
 - **Copper as sheets** lies on the dielectric face of each layer
   (`KiCadBoard.SheetZ`): the trace-to-plane distance of an outer microstrip is
   exactly the prepreg thickness. Dielectrics reach from sheet to sheet, so there

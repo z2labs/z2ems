@@ -112,7 +112,7 @@ def _inside(board, layer, x, y, exclude_net):
     return None
 
 
-def make_port(board, pad, number, prefer='edge', side=None):
+def make_port(board, pad, number, prefer='edge', side=None, ref_layers=None):
     # Z2_PORT_FORCE=<json file>: use the port dicts stored there (list, by number) verbatim -- the same port
     # definition for two models of one board (e.g. PADS-import vs gerber path)
     pf = os.environ.get('Z2_PORT_FORCE')
@@ -144,6 +144,10 @@ def make_port(board, pad, number, prefer='edge', side=None):
     layers = board.copper_layers
     i = layers.index(pad.layer)
     order = layers[i + 1:] if i == 0 else list(reversed(layers[:i]))
+    if ref_layers:                                 # the user named the reference plane(s): only those
+        order = [l for l in order if l in ref_layers]
+        if not order:
+            raise ValueError('port %d (%s): reference layer %s is not below the pad layer %s' % (number, pad.ref, ', '.join(ref_layers), pad.layer))
     # preferred: the pad edge facing the nearest board edge; an edge connector often has the planes pulled
     # back (or cut out) under that end, then the other pad edges are tried, nearest board edge first
     ref_layer = None
@@ -185,6 +189,185 @@ def make_port(board, pad, number, prefer='edge', side=None):
     return dict(number=number, ref=pad.ref, net=pad.net, layer=pad.layer, ref_layer=ref_layer, ref_net=ref_net,
                 start=[a[0], a[1], zr], stop=[b[0], b[1], zs], side=side, normal_axis=axis,
                 width=float(np.hypot(b[0] - a[0], b[1] - a[1])))
+
+
+def _gap_box(plus, minus, inset=0.05, copper=None):
+    """ The lumped-port box in the copper plane between the + pad and one - pad: along the axis that separates
+        them, from the edge of the + pad to the nearest ground copper in that direction (the - pad itself, or a
+        ground pour / track of its net that lies between the two pads: the port must span the real gap, else its
+        probes sit inside copper), a little into both conductors (copper has the higher priority, so only the gap
+        itself is the port), across the overlap of the two pads (or the narrower pad).
+        copper: shapely geometry of the - net on this layer (optional). """
+    P0, P1 = plus.pts.min(0), plus.pts.max(0)
+    M0, M1 = minus.pts.min(0), minus.pts.max(0)
+    gaps = [max(M0[k] - P1[k], P0[k] - M1[k]) for k in (0, 1)]
+    ax = 0 if gaps[0] >= gaps[1] else 1
+    if gaps[ax] <= 0:
+        raise ValueError('pads %s %s and %s %s overlap: no gap for a port' % (plus.ref, plus.pad, minus.ref, minus.pad))
+    t = 1 - ax
+    lo, hi = max(P0[t], M0[t]), min(P1[t], M1[t])
+    if hi - lo < 0.05:                        # side by side but offset: across the narrower pad
+        w = min(P1[t] - P0[t], M1[t] - M0[t])
+        c = 0.5 * (P0[t] + P1[t])
+        lo, hi = c - w / 2, c + w / 2
+    up = M0[ax] > P1[ax]                      # the - pad lies towards +axis of the + pad
+    b = P1[ax] if up else P0[ax]              # + pad edge
+    a = M0[ax] if up else M1[ax]              # - pad edge
+    if copper is not None and not copper.is_empty:
+        from shapely.geometry import box as sbox
+        pts = [(b, lo), (a, hi)] if ax == 0 else [(lo, b), (hi, a)]
+        strip = sbox(min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+        hit = strip.intersection(copper)
+        if not hit.is_empty:
+            x0, y0, x1, y1 = hit.bounds
+            near = (x0, y0)[ax] if up else (x1, y1)[ax]
+            if (near - b) * (a - b) > 0.02 * abs(a - b):        # strictly between the + edge and the - pad
+                a = near
+    gap = abs(a - b)
+    e = min(inset, 0.25 * gap, 0.25 * (P1[ax] - P0[ax]))
+    a, b = (a + e, b - e) if a > b else (a - e, b + e)
+    start, stop = [0.0, 0.0], [0.0, 0.0]
+    start[ax], stop[ax] = a, b                # start at ground, stop at the + pad (as z: plane -> strip)
+    start[t], stop[t] = lo, hi
+    return dict(axis=ax, start=start, stop=stop, gap=float(gap), minus=dict(ref=minus.ref, pad=minus.pad, net=minus.net))
+
+
+def _net_copper(board, layer, net):
+    """ shapely union of the copper of `net` on `layer` (pads, tracks, zones, vias) """
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    polys = []
+    for s in board.ShapesOn(layer):
+        if s.net != net or len(s.pts) < 3:
+            continue
+        try:
+            polys.append(Polygon(s.pts, [h for h in (s.holes or []) if len(h) >= 3]).buffer(0))
+        except Exception:
+            continue
+    return unary_union(polys) if polys else None
+
+
+def make_gap_port(board, plus, minus_pads, number):
+    """ Port between the + pad and its ground pads on the same copper layer (edge connector: the GND pads on
+        both sides; IC pin: the neighbouring GND pins). One lumped sub-port per - pad, in parallel: each has
+        n * Z0, all are driven together, and the port voltage is their mean, the port current their sum. """
+    if not minus_pads:
+        raise ValueError('port %d (%s): no reference pads' % (number, plus.ref))
+    zs = board.SheetZ(plus.layer)
+    subs = []
+    cu = {}
+    for m in minus_pads:
+        if m.layer != plus.layer:
+            raise ValueError('port %d: reference pad %s %s is on %s, the + pad on %s' % (number, m.ref, m.pad, m.layer, plus.layer))
+        if m.net not in cu:
+            cu[m.net] = _net_copper(board, plus.layer, m.net)
+        g = _gap_box(plus, m, copper=cu[m.net])
+        g['start'] = [g['start'][0], g['start'][1], zs]
+        g['stop'] = [g['stop'][0], g['stop'][1], zs]
+        subs.append(g)
+    s0 = subs[0]
+    return dict(number=number, kind='gap', ref=plus.ref, pad_no=plus.pad, net=plus.net, layer=plus.layer, ref_layer=plus.layer,
+                ref_net=minus_pads[0].net, subs=subs, start=list(s0['start']), stop=list(s0['stop']), normal_axis=s0['axis'],
+                side='gap', width=float(abs(s0['stop'][1 - s0['axis']] - s0['start'][1 - s0['axis']])))
+
+
+class CombinedPort(object):
+    """ Sub-ports in parallel seen as one port: U = mean of the sub-port voltages, I = sum of their currents,
+        waves for the reference impedance z0 (the openEMS voltage-wave convention of Port.CalcPort). """
+    def __init__(self, subs, z0, signs=None):
+        self.subs, self.z0 = subs, z0
+        self.signs = signs or [1] * len(subs)
+
+    def CalcPort(self, sim_path, f, ref_impedance=None):
+        z = ref_impedance or self.z0
+        n = len(self.subs)
+        for p in self.subs:
+            p.CalcPort(sim_path, f, ref_impedance=z * n)
+        self.uf_tot = sum(sg * p.uf_tot for p, sg in zip(self.subs, self.signs)) / n
+        self.if_tot = sum(sg * p.if_tot for p, sg in zip(self.subs, self.signs))
+        self.uf_inc = 0.5 * (self.uf_tot + z * self.if_tot)
+        self.uf_ref = self.uf_tot - self.uf_inc
+
+
+def port_lines(p):
+    """ Mesh lines a port needs, as {axis: [values]}: a vertical port its plane; a gap port both ends of every
+        sub-port box, two lines inside the gap and the middle of its width (the box must hold Yee edges). """
+    out = {0: [], 1: []}
+    if p.get('kind') != 'gap':
+        out[p['normal_axis']].append(p['start'][p['normal_axis']])
+        return out
+    for g in p['subs']:
+        ax, t = g['axis'], 1 - g['axis']
+        a, b = g['start'][ax], g['stop'][ax]
+        out[ax] += [a, b, a + (b - a) / 3, a + 2 * (b - a) / 3]
+        out[t] += [0.5 * (g['start'][t] + g['stop'][t])]
+    return out
+
+
+def pads_of(board, ref, pad_no=None, net=None, layer=None):
+    """ Outer-layer copper pads of footprint `ref` (optionally one pad number / net / layer). """
+    outer = (board.copper_layers[0], board.copper_layers[-1])
+    pads = [s for s in board.shapes if s.kind == 'pad' and s.ref == ref and s.layer in outer
+            and (not net or s.net == net) and (not layer or s.layer == layer)]
+    if pad_no is not None:
+        pads = [s for s in pads if str(s.pad) == str(pad_no)]
+    return pads
+
+
+def parse_port_arg(arg):
+    """ Command-line port: REF (the v1 vertical port), REF:PAD, REF:PAD/GREF:GPAD,GPAD2... (gap port to those
+        ground pads; GREF: may be left out for pads of the same footprint), REF:PAD@In1.Cu (vertical port to
+        that layer). Examples: J1:1/2,3,4,5   U3:7/6,8   ANT1:1@In1.Cu """
+    sp = {}
+    head, minus = arg, None
+    if '/' in arg:
+        head, minus = arg.split('/', 1)
+    elif '@' in arg:
+        head, plane = arg.split('@', 1)
+        sp['minus'] = {'plane': plane}
+    ref, _, pad = head.partition(':')
+    sp['plus'] = {'ref': ref, 'pad': pad or None}
+    if minus is not None:
+        pads = []
+        for tok in minus.split(','):
+            r, _, p = tok.rpartition(':')
+            pads.append({'ref': r or ref, 'pad': p})
+        sp['minus'] = {'pads': pads}
+    return sp
+
+
+def port_from_spec(board, sp, number):
+    """ A port from a plugin / viewer port spec.
+        v2: {"plus": {"ref", "pad", "layer"?}, "minus": {"pads": [{"ref", "pad"}...]} | {"plane": "In1.Cu"} | {}, "z0"}
+            minus.pads: gap port in the copper plane (connector or IC ground pads); minus.plane: vertical port
+            down/up to that layer; no minus: vertical port to the nearest reference copper (the v1 behaviour).
+        v1: {"ref", "net"?, "pad_no"?, "layer"?, "z0"}: vertical port at that pad. """
+    if 'plus' in sp:
+        pl = sp['plus']
+        cand = pads_of(board, pl['ref'], pl.get('pad'), layer=pl.get('layer'))
+        if not cand:
+            raise ValueError('port %d: no outer-layer pad %s %s' % (number, pl['ref'], pl.get('pad', '')))
+        plus = cand[0]
+        mi = sp.get('minus') or {}
+        if mi.get('pads'):
+            mp = []
+            for m in mi['pads']:
+                c = pads_of(board, m['ref'], m.get('pad'), layer=plus.layer)
+                if not c:
+                    raise ValueError('port %d: reference pad %s %s not on %s' % (number, m['ref'], m.get('pad', ''), plus.layer))
+                mp += c
+            port = make_gap_port(board, plus, mp, number)
+        else:
+            port = make_port(board, plus, number, ref_layers=[mi['plane']] if mi.get('plane') else None)
+    else:
+        pads = pads_of(board, sp['ref'], sp.get('pad_no'), net=sp.get('net'), layer=sp.get('layer'))
+        if not pads and sp.get('pad_no'):
+            pads = pads_of(board, sp['ref'], None, net=sp.get('net'), layer=sp.get('layer'))
+        if not pads:
+            raise ValueError('port %d: no outer-layer pad %s %s' % (number, sp['ref'], sp.get('net', '')))
+        port = make_port(board, pads[0], number)
+    port['z0'] = float(sp.get('z0') or 50.0)
+    return port
 
 
 def port_at_track_exit(board, pad, number, step=0.05, margin=0.15):
@@ -460,7 +643,9 @@ def mesh_lines(board, ports, fmax, res_div=20, margin=None, coarse=1.0, copper='
         X += [d.x] + list(np.arange(d.x - R_, d.x + R_ + 1e-9, r))
         Y += [d.y] + list(np.arange(d.y - R_, d.y + R_ + 1e-9, r))
     for p in ports:        # only the port plane gets a line; its transverse extent snaps to the strip lines
-        (X if p['normal_axis'] == 0 else Y).append(p['start'][p['normal_axis']])
+        pl = port_lines(p)
+        X += pl[0]
+        Y += pl[1]
     for c in board.copper_layers:
         Z.append(board.SheetZ(c))
         if copper == 'solid':          # both copper faces, at least two cells across the outer copper
@@ -525,8 +710,11 @@ def final_mesh(board, ports, fmax, coarse=1.0, copper='sheet', refine=1.0):
     # is empty (no excitation, probes read 0, S-parameters NaN)
     X, Y = list(X), list(Y)
     for p in ports:
-        ax = p['normal_axis']
-        _force_line(X if ax == 0 else Y, _sig7(p['start'][ax]))
+        pl = port_lines(p)
+        for v in pl[0]:
+            _force_line(X, _sig7(v))
+        for v in pl[1]:
+            _force_line(Y, _sig7(v))
     gr = grade_ratio()
     if gr:                                        # M4: no cell more than `gr` times its neighbour (coupon: +22 % cells, same dt)
         X, Y, Z = (grade(v, gr) for v in (X, Y, Z))
@@ -580,12 +768,33 @@ def build(board, ports, fmin, fmax, excite, copper='sheet', with_mask=False, coa
         g.SetLines(ax, np.unique([_sig7(x) for x in v]))
     pobj = []
     for p in ports:
+        z0 = p.get('z0', 50.0)
+        ex = 1 if p['number'] == excite else 0
+        if p.get('kind') == 'gap':                 # parallel sub-ports in the copper plane, n * Z0 each
+            # every sub-port box goes up its axis (start < stop): a box from the - pad down to a + pad below it
+            # reads its voltage with the opposite sign (the gap port on the upper ground pad of an edge SMA
+            # cancelled the lower one: S21 -15 dB). Such a box is laid from + to - instead, driven with -1, and
+            # its voltage and current are negated in CombinedPort.
+            n = len(p['subs'])
+            subs, signs = [], []
+            for k, sb in enumerate(p['subs']):
+                ax_ = sb['axis']
+                lo, hi = list(sb['start']), list(sb['stop'])
+                sg = 1
+                if lo[ax_] > hi[ax_]:
+                    lo[ax_], hi[ax_] = hi[ax_], lo[ax_]
+                    sg = -1
+                subs.append(FDTD.AddLumpedPort(100 * p['number'] + k, z0 * n, [_sig7(v) for v in lo], [_sig7(v) for v in hi],
+                                               'xy'[ax_], excite=ex * sg))
+                signs.append(sg)
+            pobj.append(CombinedPort(subs, z0, signs))
+            continue
         st = [_sig7(v) for v in p['start']]
         sp = [_sig7(v) for v in p['stop']]
-        pobj.append(FDTD.AddLumpedPort(p['number'], p.get('z0', 50.0), st, sp, 'z', excite=1 if p['number'] == excite else 0))
+        pobj.append(FDTD.AddLumpedPort(p['number'], z0, st, sp, 'z', excite=ex))
     nl = [len(g.GetLines(a)) for a in 'xyz']
     dumps = []
-    if fields and excite == 1:                    # current maps of the port-1 excitation
+    if fields:                                    # current maps (simulate() asks for them on the first excitation)
         import fields as fmod
         dumps = fmod.add_dumps(CSX, board, fields['freqs'], fields.get('layers'))
     er = max([l.epsilon_r or 1.0 for l in board.stackup if l.type in ('prepreg', 'core')] + [1.0])
@@ -861,9 +1070,14 @@ def line_params(f, S, length_mm, z_ref=50.0):
     return Z0, eeff
 
 
+def _nn(a):
+    """ list of floats with NaN (a column of a port that was not excited) as None: valid JSON """
+    return [None if v != v else float(v) for v in np.asarray(a, float)]
+
+
 def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, threads=4, copper='sheet',
              with_mask=False, coarse=1.0, nf=401, log=None, materials=None, ports=None, progress=None, z0=None, fields=None,
-             board_obj=None, converge=False, refine=1.0):
+             board_obj=None, converge=False, refine=1.0, excite=None):
     """ Simulate a KiCad board between the given port pads (footprint references), or explicit port
         definitions `ports` (as returned by make_port / snap_port). Returns the result dict (also result.json). """
     log = log or (lambda m: print(m, flush=True))
@@ -875,7 +1089,8 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
         fn, nm = fab.split(':', 1)
         FabStackups.Apply(board, FabStackups.Find(fab=fn, name=nm)[0])
     if ports is None:
-        ports = [make_port(board, find_pad(board, r), i + 1) for i, r in enumerate(port_refs)]
+        ports = [port_from_spec(board, parse_port_arg(r), i + 1) if any(c in r for c in ':/@') else make_port(board, find_pad(board, r), i + 1)
+                 for i, r in enumerate(port_refs)]
     for i, p in enumerate(ports):
         p['number'] = i + 1
         p.setdefault('z0', z0[i] if z0 else 50.0)
@@ -886,15 +1101,19 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
     runs = []
     meta = None
     field_res = None
-    for e in range(1, n + 1):
+    # excite: the port numbers to drive (one run each); the S-matrix columns of the others stay NaN
+    exc = sorted({int(e) for e in excite if 1 <= int(e) <= n}) if excite else list(range(1, n + 1))
+    if excite:
+        S[:] = np.nan
+    for e in exc:
         FDTD, CSX, pobj, meta = build(board, ports, fmin, fmax, e, copper=copper, with_mask=with_mask, coarse=coarse, refine=refine, materials=materials,
-                                      fields=fields)
+                                      fields=fields if e == exc[0] else None)
         cdir = os.path.join(out, 'exc%d' % e)
         os.makedirs(cdir, exist_ok=True)
         xml = os.path.join(cdir, 'model.xml')
         FDTD.Write2XML(xml)
         q = meta.get('quality', {})
-        log('excitation %d/%d: mesh %s (%.2f MCells), engine %s' % (e, n, meta['mesh'], meta['mcells'], variant or DEFAULT_VARIANT))
+        log('excitation %d/%d: mesh %s (%.2f MCells), engine %s' % (exc.index(e) + 1, len(exc), meta['mesh'], meta['mcells'], variant or DEFAULT_VARIANT))
         if q.get('grade'):
             log('  mesh quality %s: min %s mm, max %s mm, grading %s, aspect %s, %s cells/wavelength' % (
                 q['grade'], q['min_mm'], q['max_mm'], q['grading'], q['aspect'], q['cells_per_wavelength']))
@@ -927,11 +1146,12 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
                components=[dict(ref=c['ref'], kind=c['kind'], value=c['value']) for c in getattr(board, 'components', [])],
                ports=ports, mesh=meta['mesh'], mcells=meta['mcells'], res_mm=meta['res_mm'], runs=runs,
                mesh_quality=dict(meta.get('quality', {}), **{k: runs[0][k] for k in ('dt_ps', 'pec_edges', 'conformal_edges', 'conformal_frac') if runs and k in runs[0]}),
-               S_re={'S%d%d' % (i + 1, j + 1): S[:, i, j].real.round(6).tolist() for i in range(n) for j in range(n)},
-               S_im={'S%d%d' % (i + 1, j + 1): S[:, i, j].imag.round(6).tolist() for i in range(n) for j in range(n)},
+               S_re={'S%d%d' % (i + 1, j + 1): _nn(S[:, i, j].real.round(6)) for i in range(n) for j in range(n)},
+               S_im={'S%d%d' % (i + 1, j + 1): _nn(S[:, i, j].imag.round(6)) for i in range(n) for j in range(n)},
                f_GHz=(f / 1e9).round(5).tolist(),
-               S_dB={'S%d%d' % (i + 1, j + 1): (20 * np.log10(np.abs(S[:, i, j]) + 1e-15)).round(3).tolist() for i in range(n) for j in range(n)})
-    if n == 2:
+               S_dB={'S%d%d' % (i + 1, j + 1): _nn((20 * np.log10(np.abs(S[:, i, j]) + 1e-15)).round(3)) for i in range(n) for j in range(n)},
+               excited=exc)
+    if n == 2 and len(exc) == 2:
         L = math.dist(ports[0]['start'][:2], ports[1]['start'][:2]) if ports[0]['normal_axis'] == ports[1]['normal_axis'] else None
         if L:
             Z0, ee = line_params(f, S, L)
@@ -953,8 +1173,9 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[1])
     ap.add_argument('board')
-    ap.add_argument('--port', action='append', help='footprint reference of a port pad (repeat); without it the RF '
-                    'connectors found by rf_ports are used')
+    ap.add_argument('--port', action='append', help='a port (repeat): REF (pad of that footprint, vertical port to the '
+                    'nearest reference copper), REF:PAD/GPAD,GPAD (gap port to those ground pads, e.g. J1:1/2,3,4,5), '
+                    'REF:PAD@LAYER (vertical port to that layer); without it the RF connectors found by rf_ports are used')
     ap.add_argument('--list-ports', action='store_true', help='only list the RF port candidates and exit')
     ap.add_argument('--fmin', type=float, default=0.1e9)
     ap.add_argument('--fmax', type=float, default=6e9)
