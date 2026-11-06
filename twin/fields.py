@@ -481,3 +481,67 @@ def write_png(path, rgb):
     with open(path, 'wb') as fh:
         fh.write(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6 if ch == 4 else 2, 0, 0, 0))
                  + chunk(b'IDAT', zlib.compress(raw, 6)) + chunk(b'IEND', b''))
+
+
+def _chevrons(pts, every, size):
+    """ Small arrowheads along a polyline, pointing along it: list of 3-point polylines. """
+    pts = np.asarray(pts, float)
+    if len(pts) < 2:
+        return []
+    seg = np.diff(pts, axis=0)
+    L = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0], np.cumsum(L)])
+    out = []
+    for s in np.arange(every / 2, cum[-1], every):
+        i = min(np.searchsorted(cum, s) - 1, len(L) - 1)
+        if L[i] <= 0:
+            continue
+        d = seg[i] / L[i]
+        p = pts[i] + d * (s - cum[i])
+        n = np.array([-d[1], d[0]])
+        out.append([p - d * size + n * size * 0.7, p, p - d * size - n * size * 0.7])
+    return out
+
+
+def burn_lines(rgba, lines, x0, y0, dx, scale=3, arrows=True, dsep=None):
+    """ Draw field lines into the map: returns RGBA (row 0 = min y) `scale` times finer than the input
+        grid, covering x0 - dx/2 .. x0 + (nx - 1/2) dx. Lines are white with a dark edge (width grows
+        with mag in 0..1), chevrons along the current when `arrows`. Uses matplotlib's Agg renderer. """
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.collections import LineCollection
+    ny, nx = rgba.shape[:2]
+    W, H = nx * scale, ny * scale
+    fig = Figure(figsize=(W / 100.0, H / 100.0), dpi=100)
+    canvas = FigureCanvasAgg(fig)
+    fig.patch.set_alpha(0)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_axis_off()
+    ext = (x0 - dx / 2, x0 + (nx - 0.5) * dx, y0 - dx / 2, y0 + (ny - 0.5) * dx)
+    ax.imshow(rgba, origin='lower', extent=ext, interpolation='nearest' if scale == 1 else 'bilinear')
+    ax.set_xlim(ext[0], ext[1])
+    ax.set_ylim(ext[2], ext[3])
+    span = max(ext[1] - ext[0], ext[3] - ext[2])
+    pt = 72.0 / 100.0                                   # points per pixel
+    segs, lw, chev = [], [], []
+    for l in lines:
+        p = np.asarray(l['pts'], float)
+        if len(p) < 2:
+            continue
+        m = float(np.clip(abs(l.get('mag', 1.0)), 0, 1))
+        segs.append(p)
+        lw.append(pt * scale * (0.5 + 1.3 * np.sqrt(m)))
+        if arrows:
+            sep = dsep or span / 120.0
+            chev += [(c, lw[-1]) for c in _chevrons(p, min(span / 15.0, 10 * sep), 0.3 * sep)]
+    ew = 1.4 * pt * scale                               # dark edge on both sides
+    for cl, add in (('#101010', ew), ('#ffffff', 0.0)):
+        if segs:
+            ax.add_collection(LineCollection(segs, colors=cl, linewidths=[w + add for w in lw],
+                                             capstyle='round', joinstyle='round'))
+        if chev:
+            ax.add_collection(LineCollection([c for c, _ in chev], colors=cl, linewidths=[w * 1.2 + add for _, w in chev],
+                                             capstyle='round', joinstyle='round'))
+    canvas.draw()
+    out = np.asarray(canvas.buffer_rgba(), np.uint8)[:H, :W].copy()
+    return out[::-1]                                    # row 0 = min y, as the input

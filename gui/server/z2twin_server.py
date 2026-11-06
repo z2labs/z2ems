@@ -260,6 +260,7 @@ class Twin:
                                                                text='|Js| peak %.3g A/m = 0 dB, %g dB range, 1 W incident at P%d' % (mx, rng, e)))
             if req.get('lines', True):
                 dsep = float(req.get('dsep_mm', 0)) or max(g['dx'] * 6, (xs[-1] - xs[0]) / 120.0)
+                out['dsep'] = dsep
                 sl = fmod.streamlines(vx, vy, m, g['x0'], g['y0'], g['dx'], dsep_px=dsep / g['dx'], min_rel=float(req.get('min_rel', 0.05)))
                 out['lines'] = [dict(pts=np.asarray(l['pts']).round(4).tolist(), mag=float(np.mean(l['mag'])) / mx) for l in sl]
         else:
@@ -285,11 +286,21 @@ class Twin:
         if req.get('image', True):
             a = np.where(m > 0, 235, 0).astype(np.uint8)[..., None]
             rgba = np.concatenate([img, a], -1)
+            pad, px = g['dx'] / 2.0, g['dx']
+            if req.get('burn') and out.get('lines'):
+                # the lines drawn into a finer picture (white, black edge, chevrons): readable on any
+                # map colour, whatever colour the user layer has in KiCad
+                sc = int(req.get('scale') or max(1, min(4, 2400 // max(g['nx'], g['ny']))))
+                rgba = fmod.burn_lines(rgba, out['lines'], g['x0'], g['y0'], g['dx'], sc, arrows=qn == 'J',
+                                       dsep=out.get('dsep'))
+                px = g['dx'] / sc
+                out['lines_burned'] = True
             if req.get('row0', 'max') == 'max':                       # row 0 = max y (KiCad with the engine y up)
                 rgba = rgba[::-1]
             tmp = os.path.join(run, 'fields', '_overlay.png')
             fmod.write_png(tmp, np.ascontiguousarray(rgba))
-            out.update(png=base64.b64encode(open(tmp, 'rb').read()).decode('ascii'), width=int(g['nx']), height=int(g['ny']))
+            out.update(png=base64.b64encode(open(tmp, 'rb').read()).decode('ascii'), width=int(rgba.shape[1]), height=int(rgba.shape[0]),
+                       px=px, pad=pad)   # picture: x0 - pad .. x1 + pad, pixel pitch px
         return out
 
     def kicad_ports(self, p, b):

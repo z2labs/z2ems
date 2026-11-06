@@ -78,7 +78,8 @@ phasors, phase 0 = the incident wave at the port), so the numbers are physical:
 
 Check on the 50 ohm coupon (1 W, 1.5 GHz): 0.183 A on the strip and 0.195 A in the In1 return path for 0.2 A
 expected, 9.8-10.1 V for 10 V expected. The viewer shows them as colour maps, arrows and current / E-field lines,
-animated in phase; the KiCad plugin draws the maps and the lines on the board. The files are float16 arrays next to
+animated in phase; the KiCad plugin puts the maps on the board with the lines drawn into them
+(`POST /api/field_overlay`, `burn: true`: white lines with a dark edge and chevrons, readable on any map colour). The files are float16 arrays next to
 `result.json` (`fields/`, a few MB per port and frequency); `result.json["fields"]` indexes them (version 2).
 
 ## Validation

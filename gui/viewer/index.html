@@ -845,6 +845,9 @@ function fillSim() {
   $('simComp').disabled = !np; if (!np) $('simComp').checked = false;
   fillRuns();
   syncRun();
+  // the newest earlier run opens with the board: its S-parameters and fields are what the
+  // KiCad plugin's "3D viewer" button is pressed for
+  if ((B.runs || []).length && !job) { const s = $('runsSel'); s.value = '0'; s.dispatchEvent(new Event('change')); }
 }
 function syncRun() {
   const n = activePorts().length;
