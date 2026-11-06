@@ -559,7 +559,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, dict(ok=True, folder=_TWIN.root, engine=eng, engine_found=os.path.exists(eng) or bool(eng and os.sep not in eng),
                                             variant=ks.DEFAULT_VARIANT, threads=_TWIN.threads,
                                             cuda=_cuda_state(), cuda_engine=ks.VARIANTS['cuda']['exe'],
-                                            ports_api=2))     # 2: + pad / - pads or plane (kicad_sim.port_from_spec)
+                                            ports_api=2,      # 2: + pad / - pads or plane (kicad_sim.port_from_spec)
+                                            fields_api=2))    # 2: Js, E volume, layer voltages, /api/field_overlay
             if u.path == '/api/boards':
                 return self._send(200, dict(boards=_TWIN.list_boards(), folder=_TWIN.root))
             if u.path == '/api/runs':
