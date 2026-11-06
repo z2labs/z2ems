@@ -65,6 +65,22 @@ lines every r mm in a box), `Z2_PORT_TRACK_EXIT=1` (port across the track that l
 does not hold, e.g. a through-hole SMA body or an instrument case; see `examples/silabs-ams915/sma_v.py`),
 `Z2_LOSS_F` (frequency at which the dielectric loss tangent is matched).
 
+## Fields
+
+Runs from the viewer or the KiCad plugin also store the fields (`fields.py`), for every driven port, at three
+frequencies (0.25, 0.5 and 0.9 x fmax). Everything is scaled to **1 W incident at the driven port** (peak
+phasors, phase 0 = the incident wave at the port), so the numbers are physical:
+
+- the **surface current density Js** (A/m) on every copper layer, from a rot(H) dump on the sheet times the dual
+  cell height: the signal current and its return current in the planes;
+- the **E-field** in a box around the whole stack at reduced resolution, so a cut plane can be chosen after the run;
+- the **voltage** of each copper layer against the next one down, V = -integral of Ez between the two sheets.
+
+Check on the 50 ohm coupon (1 W, 1.5 GHz): 0.183 A on the strip and 0.195 A in the In1 return path for 0.2 A
+expected, 9.8-10.1 V for 10 V expected. The viewer shows them as colour maps, arrows and current / E-field lines,
+animated in phase; the KiCad plugin draws the maps and the lines on the board. The files are float16 arrays next to
+`result.json` (`fields/`, a few MB per port and frequency); `result.json["fields"]` indexes them (version 2).
+
 ## Validation
 
 | example | result with the default settings | check |

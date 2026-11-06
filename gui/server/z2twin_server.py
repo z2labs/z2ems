@@ -28,6 +28,7 @@ API (all JSON):
     GET  /api/boards                      .kicad_pcb files below the folder
     POST /api/load    {path, fab?}        viewer data (.z2v), RF port suggestions, stackup suggestions, passives
     POST /api/snap    {path, x, y, fab?}  port at the outer-layer pad nearest to (x, y) (board mm, y up)
+    POST /api/field_overlay {result, exc, k, quantity J|V, layer, phase?, lines?, image?} -> heat map + current / iso-voltage lines
     POST /api/run     {path, ports, fmax, fmin?, nf?, fab?, materials?, threads?, coarse?, engine?, converge?}   -> {job}
                       converge: also run the board with 0.6x cells and report whether the mesh is converged
                       engine: auto (GPU build when present) | cpu | cuda
@@ -59,6 +60,8 @@ import threading
 import time
 import traceback
 import uuid
+
+import numpy as np
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -218,7 +221,117 @@ class Twin:
                             for c in b.Passives()]
         data['warnings'] = list(b.warnings)
         data['runs'] = self.runs(req['path'])
+        kp = self.kicad_ports(p, b)
+        if kp is not None:                      # the KiCad plugin's ports replace the viewer's suggestions
+            data['ports'], data['port_source'] = kp, 'kicad'
         return data
+
+    def field_overlay(self, req):
+        """ One field picture for the KiCad plugin: {result: <run>/result.json, exc, k, quantity: 'J'|'V',
+            layer, phase: degrees or None (= peak), image, lines}. Returns the RGBA heat map (base64 PNG, row 0
+            = max y) over bbox, polylines (current lines: streamlines of the instantaneous surface current;
+            voltage: iso-voltage lines) and the legend. """
+        import base64
+        import fields as fmod
+        rp = self.resolve(req['result'])
+        run = os.path.dirname(rp)
+        idx = (json.load(open(rp, encoding='utf-8')).get('fields') or {})
+        if idx.get('version', 1) < 2:
+            raise ValueError('this run has no field data of version 2: simulate again')
+        e, k, qn = int(req.get('exc', idx['excitations'][0])), int(req.get('k', 0)), req.get('quantity', 'J')
+        g = idx['grid']
+        names = [l['name'] for l in idx['layers']]
+        mask = np.fromfile(os.path.join(run, idx['mask']), np.uint8).reshape(len(names), g['ny'], g['nx'])
+        xs = g['x0'] + g['dx'] * np.arange(g['nx'])
+        ys = g['y0'] + g['dx'] * np.arange(g['ny'])
+        ph = req.get('phase')
+        out = dict(bbox=idx['bbox'], f_GHz=idx['f_GHz'][k], exc=e, quantity=qn, power_W=idx.get('power_W', 1.0))
+        if qn == 'J':
+            li = names.index(req.get('layer') or names[0])
+            J = fmod.load(run, idx, 'J', e, k)[li]                     # (ny, nx, 2)
+            m = mask[li]
+            peak = np.sqrt((np.abs(J) ** 2).sum(-1))
+            ph = fmod.peak_phase(J) if ph is None else float(ph)
+            vx, vy = fmod.instant(J[..., 0], ph), fmod.instant(J[..., 1], ph)
+            mx = float(peak.max()) or 1.0
+            rng = float(req.get('db_range', 40.0))
+            img = fmod.colormap((20 * np.log10(np.maximum(peak, 1e-30) / mx) + rng) / rng)
+            out.update(layer=names[li], phase=ph, legend=dict(kind='dB', unit='A/m', max=mx, range=rng,
+                                                               text='|Js| peak %.3g A/m = 0 dB, %g dB range, 1 W incident at P%d' % (mx, rng, e)))
+            if req.get('lines', True):
+                dsep = float(req.get('dsep_mm', 0)) or max(g['dx'] * 6, (xs[-1] - xs[0]) / 120.0)
+                sl = fmod.streamlines(vx, vy, m, g['x0'], g['y0'], g['dx'], dsep_px=dsep / g['dx'], min_rel=float(req.get('min_rel', 0.05)))
+                out['lines'] = [dict(pts=np.asarray(l['pts']).round(4).tolist(), mag=float(np.mean(l['mag'])) / mx) for l in sl]
+        else:
+            pairs = idx['V']['pairs']
+            up = req.get('layer') or pairs[0][0]
+            pi = [a for a, _ in pairs].index(up)
+            V = fmod.load(run, idx, 'V', e, k)[pi]                     # (ny_e, nx_e) on the E grid
+            ex, ey = np.asarray(idx['E']['x']), np.asarray(idx['E']['y'])
+            Vg = fmod._resample2(V, ex, ey, xs, ys)                    # -> J grid
+            m = mask[names.index(up)] if up in names else np.ones_like(mask[0])
+            ph = fmod.peak_phase(Vg * m) if ph is None else float(ph)
+            vi = fmod.instant(Vg, ph)
+            mx = float(np.abs(Vg * m).max()) or 1.0
+            img = fmod.colormap(0.5 + 0.5 * vi / mx, fmod._DIV)
+            out.update(layer=up, against=pairs[pi][1], phase=ph,
+                       legend=dict(kind='signed', unit='V', max=mx, text='V(%s - %s) at %.0f deg: -%.3g .. +%.3g V, 1 W incident at P%d'
+                                   % (up, pairs[pi][1], ph, mx, mx, e)))
+            if req.get('lines', True):
+                lv = [mx * t for t in (-0.9, -0.7, -0.5, -0.3, -0.1, 0.1, 0.3, 0.5, 0.7, 0.9)]
+                inner = ~fmod._grow(m == 0, 2)                         # well inside the copper: lines across it
+                cl = fmod.contour_lines(np.where(inner, vi, np.nan), xs, ys, lv)
+                out['lines'] = [dict(pts=c['pts'], mag=c['level'] / mx) for c in cl]
+        if req.get('image', True):
+            a = np.where(m > 0, 235, 0).astype(np.uint8)[..., None]
+            rgba = np.concatenate([img, a], -1)
+            if req.get('row0', 'max') == 'max':                       # row 0 = max y (KiCad with the engine y up)
+                rgba = rgba[::-1]
+            tmp = os.path.join(run, 'fields', '_overlay.png')
+            fmod.write_png(tmp, np.ascontiguousarray(rgba))
+            out.update(png=base64.b64encode(open(tmp, 'rb').read()).decode('ascii'), width=int(g['nx']), height=int(g['ny']))
+        return out
+
+    def kicad_ports(self, p, b):
+        """ Ports the KiCad plugin saved for this board (<board>.z2ems/setup.json, port_defs): None when
+            there is no such file, else one viewer port per definition, made by port_from_spec so the
+            3D markers show exactly what the engine simulates (gap ports: every sub-port). """
+        sp = os.path.join(os.path.dirname(p), os.path.splitext(os.path.basename(p))[0] + '.z2ems', 'setup.json')
+        if not os.path.exists(sp):
+            return None
+        try:
+            defs = json.load(open(sp, encoding='utf-8')).get('port_defs') or []
+        except Exception:
+            return None
+        out = []
+        for d in defs:
+            plus = d.get('plus') or {}
+            mp, pl = d.get('minus_pads') or [], d.get('minus_plane')
+            spec = {'plus': {'ref': plus.get('ref'), 'pad': plus.get('pad'), 'layer': plus.get('layer') or None},
+                    'z0': float(d.get('z0') or 50.0), 'name': 'P%d' % int(d.get('n', len(out) + 1))}
+            if mp:
+                spec['minus'] = {'pads': [{'ref': m.get('ref'), 'pad': m.get('pad')} for m in mp]}
+            elif pl:
+                spec['minus'] = {'plane': pl}
+            refs = {}
+            for m in mp:
+                refs.setdefault(m.get('ref'), set()).add(str(m.get('pad')))
+            minus_txt = ('; '.join('%s pad %s' % (r, ', '.join(sorted(v))) for r, v in refs.items()) if mp
+                         else ('plane %s' % pl if pl else 'nearest plane'))
+            q = dict(ref=plus.get('ref'), net=plus.get('net', ''), layer=plus.get('layer'), pad_no=plus.get('pad'), z0=spec['z0'],
+                     name=spec['name'], spec=spec, kicad=True, on=bool(d.get('excite', True)), confident=True, score=0,
+                     minus=minus_txt, reasons=['defined in KiCad (Z2Labs EMS window)'])
+            if not plus.get('ref'):
+                q['error'] = 'no + terminal'
+            else:
+                try:
+                    g = ks.port_from_spec(b, spec, len(out) + 1)
+                    q.update(kind=g.get('kind', 'vertical'), start=g['start'], stop=g['stop'], ref_layer=g.get('ref_layer'),
+                             subs=[dict(start=list(sb['start']), stop=list(sb['stop']), axis=sb['axis']) for sb in g.get('subs', [])])
+                except Exception as e:
+                    q['error'] = str(e)
+            out.append(q)
+        return out
 
     def snap(self, req):
         _, b = self.board(req['path'], req.get('fab'))
@@ -414,8 +527,8 @@ class Handler(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype='application/json', headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body, separators=(',', ':')).encode('utf-8')
         gz = len(data) > 32768 and 'gzip' in (self.headers.get('Accept-Encoding') or '') and \
-            (ctype.startswith('application/json') or ctype.startswith('text/'))
-        if gz:                                 # board and schematic JSON: 5-10x smaller over Wi-Fi / mobile
+            (ctype.startswith('application/json') or ctype.startswith('text/') or ctype == 'application/octet-stream')
+        if gz:                                 # board JSON, field arrays (zero off the copper): 5-10x smaller
             data = gzip.compress(data, 5)
         self.send_response(code)
         self.send_header('Content-Type', ctype)
@@ -495,6 +608,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, _TWIN.run(req))
             if u.path == '/api/mesh':
                 return self._send(200, _TWIN.mesh(req))
+            if u.path == '/api/field_overlay':
+                return self._send(200, _TWIN.field_overlay(req))
             if u.path == '/api/coherence':
                 return self._send(200, _TWIN.coherence(req['path'], req.get('spec')))
             if u.path == '/api/pad':

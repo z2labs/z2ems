@@ -302,6 +302,35 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
       <div class="seg"><a class="btn small" id="dlTouch" download hidden>Download Touchstone</a><select id="runsSel" class="z0" style="width:auto" hidden></select></div>
     </section>
 
+
+    <section class="sec" id="fldSec" hidden>
+      <h2>Fields</h2>
+      <div class="field">
+        <label for="fldExc">Driven port</label><select id="fldExc"></select>
+        <label for="fldF">Frequency</label><select id="fldF"></select>
+        <label for="fldQ">Show</label><select id="fldQ"><option value="J">Surface current Js (copper layers)</option><option value="V">Voltage to the next layer</option><option value="E">E-field on a cut plane</option></select>
+      </div>
+      <div class="seg">
+        <button class="btn small" id="fldOn" title="Show the fields in the 3D view (hide layers in Stackup to look at inner planes)">Show fields</button>
+        <button class="btn small on" data-fd="map">Colour map</button>
+        <button class="btn small on" data-fd="arrows" id="fldArrBtn">Arrows</button>
+        <button class="btn small on" data-fd="lines" id="fldLinesBtn">Current lines</button>
+      </div>
+      <div class="ctl"><label for="fldPh">Phase</label><input type="range" id="fldPh" min="0" max="359" step="1" value="0"><output id="fldPhV">0°</output></div>
+      <div class="seg">
+        <button class="btn small" id="fldPlay">▶ Animate</button>
+        <select id="fldSpeed" class="z0" style="width:auto" aria-label="Animation speed"><option value="0.5">slow</option><option value="1" selected>normal</option><option value="2">fast</option></select>
+        <select id="fldMode" class="z0" style="width:auto" aria-label="Value"><option value="inst" selected>instantaneous</option><option value="peak">peak over the cycle</option></select>
+        <select id="fldScale" class="z0" style="width:auto" aria-label="Colour scale"><option value="db" selected>dB, 40 dB range</option><option value="lin">linear</option></select>
+      </div>
+      <div class="field" id="fldCutRow" hidden>
+        <label for="fldCutAx">Cut plane</label><select id="fldCutAx"><option value="x" selected>across x (y-z plane)</option><option value="y">across y (x-z plane)</option></select>
+        <label for="fldCutPos">Position</label><input type="range" id="fldCutPos" min="0" max="1000" value="500">
+      </div>
+      <canvas class="xsec" id="fldBar" style="height:30px" aria-label="Colour scale"></canvas>
+      <p class="hint" id="fldInfo"></p>
+      <p class="hint" id="fldNote"></p>
+    </section>
     <section class="sec">
       <h2>Selection</h2>
       <dl class="info" id="info"><dt>Click</dt><dd>a layer, track, via or component</dd></dl>
@@ -562,7 +591,7 @@ function build(data) {
     ? `⚠ The 3D models are illustration only. The simulation meshes the cyan (metal) and violet (dielectric) bodies from ${B.sim_source}.`
     : '⚠ The 3D models are illustration only; the simulation does not use them. No simulation model (<board>_sim.xml) next to the board.';
 
-  ports = (B.ports || []).map((p) => ({ ...p, on: !!p.confident && !p.error }));
+  ports = (B.ports || []).map((p) => ({ ...p, on: p.kicad ? p.on !== false && !p.error : !!p.confident && !p.error }));
   portGroup = new THREE.Group(); model.add(portGroup);
   buildPortList();
   fillSim();
@@ -641,6 +670,7 @@ function layout() {
   }
   layoutPorts();
   applyVisibility();
+  fldLayout();
 }
 
 // ---------------------------------------------------------------- RF ports
@@ -674,6 +704,21 @@ function layoutPorts() {
   const act = activePorts();
   ports.forEach((p, i) => {
     if (!p.on || p.error) return;
+    if (p.kind === 'gap' && p.subs && p.subs.length) {      // in-plane sub-ports: one red bar per gap, + pad marked
+      const mt = new THREE.MeshStandardMaterial({ color: 0xff3b6b, emissive: 0x7a0020, transparent: true, opacity: 0.9 });
+      let cx = 0, cy = 0, zt = 0;
+      for (const sb of p.subs) {
+        const [a0, b0, z] = sb.start, [a1, b1] = sb.stop, zz = portZ(z), th = Math.max(0.04, zScale() * 0.02);
+        const g = new THREE.BoxGeometry(Math.max(Math.abs(a1 - a0), 0.03), Math.max(Math.abs(b1 - b0), 0.03), th);
+        const mesh = new THREE.Mesh(g, mt); mesh.position.set((a0 + a1) / 2, (b0 + b1) / 2, zz + th / 2);
+        mesh.userData = { kind: 'port', i }; mesh.renderOrder = 3; portGroup.add(mesh);
+        cx += sb.stop[0]; cy += sb.stop[1]; zt = zz;
+      }
+      cx /= p.subs.length; cy /= p.subs.length;
+      const sp = portNumberSprite(act.indexOf(p) + 1), sz = Math.max(diag * 0.025, 0.8);
+      sp.scale.set(sz, sz, 1); sp.position.set(cx, cy, zt + sz); portGroup.add(sp);
+      return;
+    }
     const [x0, y0, z0] = p.start, [x1, y1, z1] = p.stop;
     const w = Math.max(Math.abs(x1 - x0), 0.05), h = Math.max(Math.abs(y1 - y0), 0.05);
     const za = portZ(Math.min(z0, z1)), zb = portZ(Math.max(z0, z1));
@@ -698,6 +743,11 @@ function layoutPorts() {
 function buildPortList() {
   const box = $('ports'); box.innerHTML = '';
   if (!ports.length) { box.innerHTML = '<p class="hint">No RF connector found. Use “Add port by click”.</p>'; }
+  if (B && B.port_source === 'kicad') {
+    const h = document.createElement('p'); h.className = 'hint';
+    h.textContent = 'Ports from KiCad (Z2Labs EMS window): + pad and its ground reference, as the engine simulates them. Change them in KiCad; ports added here are for this view only.';
+    box.appendChild(h);
+  }
   const act = activePorts();
   ports.forEach((p, i) => {
     if (p.z0 == null) p.z0 = 50;
@@ -709,13 +759,15 @@ function buildPortList() {
     const num = document.createElement('span'); num.className = 'pnum'; num.textContent = k >= 0 ? String(k + 1) : '·';
     num.style.opacity = k >= 0 ? 1 : 0.3;
     const t = document.createElement('span'); t.className = 'nm';
-    t.textContent = `${p.ref}  ${p.net}` + (p.error ? '  (no reference copper under the pad)' : '');
+    t.textContent = p.kicad ? `${p.name || ''}  ${p.ref} pad ${p.pad_no} · ${p.net || ''}  →  − ${p.minus || ''}` + (p.error ? '  (' + p.error + ')' : '')
+      : `${p.ref}  ${p.net}` + (p.error ? '  (no reference copper under the pad)' : '');
     t.title = (p.reasons || []).join('; ') + (p.error ? ' — ' + p.error : '') + ` — score ${p.score}`;
     const z = document.createElement('input'); z.type = 'number'; z.className = 'z0'; z.min = 1; z.max = 1000; z.step = 'any'; z.value = p.z0;
     z.title = 'Port reference impedance (Ω)'; z.setAttribute('aria-label', 'Z0 of ' + p.ref);
     z.addEventListener('click', (e) => e.stopPropagation());
     z.addEventListener('change', () => { const v = +z.value; p.z0 = v > 0 ? v : 50; z.value = p.z0; });
-    const sc = document.createElement('span'); sc.className = 'tag'; sc.textContent = p.manual ? 'manual' : (p.confident ? 'likely' : 'maybe');
+    const sc = document.createElement('span'); sc.className = 'tag';
+    sc.textContent = p.kicad ? (p.kind === 'gap' ? 'KiCad · gap' : 'KiCad · vertical') : p.manual ? 'manual' : (p.confident ? 'likely' : 'maybe');
     row.append(cb, num, t, z, sc);
     row.addEventListener('click', () => select({ kind: 'port', i }));
     box.appendChild(row);
@@ -807,7 +859,7 @@ async function runSim() {
   const req = {
     path: B.path, fab: $('simFab').value || null, fmax: +$('simFmax').value, coarse: +$('simMesh').value, engine: $('simEng').value,
     converge: $('simConv').checked,
-    ports: act.map((p) => ({ ref: p.ref, net: p.net, layer: p.layer, pad_no: p.pad_no, z0: p.z0 || 50 })),
+    ports: act.map((p) => p.spec ? { ...p.spec, z0: p.z0 || 50 } : ({ ref: p.ref, net: p.net, layer: p.layer, pad_no: p.pad_no, z0: p.z0 || 50 })),
     materials: { dispersion: $('simDisp').checked ? 'debye' : null, conductor: $('simLoss').checked ? 'loss' : 'pec',
                  roughness_um: $('simRq').value === '' ? null : +$('simRq').value, components: $('simComp').checked },
   };
@@ -850,7 +902,11 @@ function fillRuns() {
 $('runsSel').addEventListener('change', async () => {
   const r = (B.runs || [])[+$('runsSel').value];
   if (!r) return;
-  try { const res = r.live || await (await fetch('/api/file?path=' + encodeURIComponent(r.result))).json(); showResult(res, null); }
+  try {
+    const res = r.live || await (await fetch('/api/file?path=' + encodeURIComponent(r.result))).json();
+    if (res.fields && !res.fields.base) res.fields.base = r.result.replace(/\/result\.json$/, '');     // field files sit next to result.json
+    showResult(res, null);
+  }
   catch (err) { showStatus('Could not open the run', String(err.message || err)); }
 });
 
@@ -902,6 +958,7 @@ function showResult(res, touch) {
     fs.value = Math.min(1, res.fields.f_GHz.length - 1);
   }
   drawPlot();
+  fldSetup(res);
   $('resSec').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 document.querySelectorAll('[data-plot]').forEach((b) => b.addEventListener('click', () => {
@@ -929,6 +986,615 @@ function applyField() {
 }
 $('fieldBtn').addEventListener('click', () => { fieldOn = !fieldOn; applyField(); });
 $('fieldF').addEventListener('change', applyField);
+
+// ---------------------------------------------------------------- fields v2: surface current, voltage, E cut plane
+// result.fields (twin/fields.py, version 2): every port excitation, 1 W incident, peak phasors. The views:
+//   Js  colour map of |Js| on each copper layer + arrows + current lines (streamlines), animated in phase
+//   V   voltage of a copper layer against the next layer (signed, blue - red), animated: standing waves
+//   E   a cut plane through the whole stack (across x or y) with |E|, arrows and E-field lines
+// All of it follows the exploded layout and the layer visibility of the 3D view.
+const F16 = (() => {
+  const t = new Float32Array(65536);
+  for (let h = 0; h < 65536; h++) {
+    const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, m = h & 1023;
+    t[h] = e === 0 ? s * m * 5.960464477539063e-8 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * Math.pow(2, e - 15);
+  }
+  return t;
+})();
+async function fetchBin(rel) {
+  const r = await fetch('/api/file?path=' + encodeURIComponent(rel));
+  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + rel);
+  return await r.arrayBuffer();
+}
+async function fetchF16(rel, scale) {
+  const u = new Uint16Array(await fetchBin(rel)), o = new Float32Array(u.length);
+  for (let i = 0; i < u.length; i++) o[i] = F16[u[i]] * scale;
+  return o;
+}
+function lut(anchors) {                       // 256-entry RGB table from colour anchors
+  const t = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const v = i / 255 * (anchors.length - 1), k = Math.min(Math.floor(v), anchors.length - 2), f = v - k;
+    for (let c = 0; c < 3; c++) t[i * 3 + c] = Math.round(anchors[k][c] * (1 - f) + anchors[k + 1][c] * f);
+  }
+  return t;
+}
+const LUT_MAG = lut([[0, 0, 4], [40, 11, 84], [101, 21, 110], [159, 42, 99], [212, 72, 66], [245, 125, 21], [250, 193, 39], [252, 255, 164]]);
+const LUT_DIV = lut([[33, 102, 172], [103, 169, 207], [209, 229, 240], [247, 247, 247], [253, 219, 199], [239, 138, 98], [178, 24, 43]]);
+
+const FLD = {
+  idx: null, base: '', exc: 1, k: 0, q: 'J', phase: 0, play: false, speed: 1, scale: 'db', range: 40, mode: 'inst',
+  show: { map: true, arrows: true, lines: true }, cut: { ax: 'x', pos: 0.5 }, cache: {}, mask: null, obj: {}, cutObj: null,
+  on: false, linesAt: -1, busy: false, frame: 0,
+};
+function fldTag() { return 'e' + FLD.exc; }
+async function fldData(q) {
+  const I = FLD.idx, key = q + FLD.exc + '_' + FLD.k;
+  if (FLD.cache[key]) return FLD.cache[key];
+  const Q = I[q], tag = fldTag(), ks = String(FLD.k);
+  if (!Q || !Q.files[tag] || !Q.files[tag][ks]) return null;
+  $('fldNote').textContent = 'Loading ' + (q === 'J' ? 'surface currents' : q === 'V' ? 'voltages' : 'E-field') + '…';
+  const a = await fetchF16(FLD.base + '/' + Q.files[tag][ks], Q.scale[tag][ks]);
+  let d;
+  if (q === 'J') d = { a, nl: I.layers.length, peak: Q.peak[tag][ks] };
+  else if (q === 'E') d = { a, nx: Q.x.length, ny: Q.y.length, nz: Q.z.length, peak: Q.peak[tag][ks] };
+  else {                                       // V on the E grid -> complex V on the J grid (bilinear)
+    const E = I.E, g = I.grid, nx = E.x.length, ny = E.y.length, np = Q.pairs.length;
+    const W = (src, n0, dx, n) => {             // indices / weights from a uniform axis to the E lines
+      const i0 = new Int32Array(n), w = new Float32Array(n);
+      for (let i = 0; i < n; i++) {
+        const v = n0 + dx * i; let k = 0;
+        while (k < src.length - 2 && src[k + 1] < v) k++;
+        i0[i] = k; w[i] = Math.min(1, Math.max(0, (v - src[k]) / Math.max(src[k + 1] - src[k], 1e-12)));
+      }
+      return [i0, w];
+    };
+    const [ix, wx] = W(E.x, g.x0, g.dx, g.nx), [iy, wy] = W(E.y, g.y0, g.dx, g.ny);
+    const out = new Float32Array(np * g.ny * g.nx * 2);
+    for (let p = 0; p < np; p++) for (let j = 0; j < g.ny; j++) {
+      const j0 = iy[j], fy = wy[j];
+      for (let i = 0; i < g.nx; i++) {
+        const i0 = ix[i], fx = wx[i];
+        for (let c = 0; c < 2; c++) {
+          const at = (jj, ii) => a[(((p * ny + jj) * nx + ii) * 2) + c];
+          out[((p * g.ny + j) * g.nx + i) * 2 + c] = (at(j0, i0) * (1 - fx) + at(j0, i0 + 1) * fx) * (1 - fy) + (at(j0 + 1, i0) * (1 - fx) + at(j0 + 1, i0 + 1) * fx) * fy;
+        }
+      }
+    }
+    d = { a: out, np, peak: Q.peak[tag][ks] };
+  }
+  FLD.cache[key] = d;
+  $('fldNote').textContent = '';
+  return d;
+}
+
+// ---- setup from a result
+async function fldSetup(res) {
+  fldClear();
+  const I = res && res.fields;
+  FLD.idx = I && I.version >= 2 && I.excitations && I.excitations.length ? I : null;
+  $('fldSec').hidden = !(FLD.idx && API);
+  if (!FLD.idx || !API) return;
+  $('fieldCtl').hidden = true; $('fieldNote').hidden = true;
+  FLD.base = I.base; FLD.cache = {};
+  const ex = $('fldExc'); ex.innerHTML = '';
+  for (const e of I.excitations) {
+    const p = (res.ports || [])[e - 1] || {}, o = document.createElement('option');
+    o.value = e; o.textContent = `P${e} ${p.ref || ''}${p.pad_no ? ' pad ' + p.pad_no : ''}`; ex.appendChild(o);
+  }
+  FLD.exc = I.excitations[0];
+  const fs = $('fldF'); fs.innerHTML = '';
+  I.f_GHz.forEach((f, k) => { const o = document.createElement('option'); o.value = k; o.textContent = f.toFixed(2) + ' GHz'; fs.appendChild(o); });
+  FLD.k = Math.min(1, I.f_GHz.length - 1); fs.value = FLD.k;
+  $('fldQ').querySelector('[value=V]').disabled = !I.V; $('fldQ').querySelector('[value=E]').disabled = !I.E;
+  const mk = await fetchBin(FLD.base + '/' + I.mask);
+  FLD.mask = new Uint8Array(mk);
+  FLD.on = false; $('fldOn').classList.remove('on');
+  fldSync();
+}
+function fldClear() {
+  for (const k of Object.keys(FLD.obj)) { const o = FLD.obj[k]; o.group.removeFromParent(); o.group.traverse((m) => { if (m.geometry) m.geometry.dispose(); if (m.material) { if (m.material.map) m.material.map.dispose(); m.material.dispose(); } }); }
+  FLD.obj = {};
+  if (FLD.cutObj) { FLD.cutObj.removeFromParent(); FLD.cutObj.traverse((m) => { if (m.geometry) m.geometry.dispose(); if (m.material) m.material.dispose(); }); FLD.cutObj = null; }
+  FLD.play = false; $('fldPlay') && ($('fldPlay').textContent = '▶ Animate');
+}
+
+// ---- geometry helpers
+function arrowGeo() {                          // flat arrow along +x, length 1 (-0.5 .. 0.5), width 1
+  const s = [[-0.5, -0.09], [0.12, -0.09], [0.12, 0.09], [-0.5, 0.09]], h = [[0.12, -0.32], [0.5, 0], [0.12, 0.32]];
+  const p = [...s[0], 0, ...s[1], 0, ...s[2], 0, ...s[0], 0, ...s[2], 0, ...s[3], 0, ...h[0], 0, ...h[1], 0, ...h[2], 0];
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(p), 3));
+  g.computeVertexNormals(); return g;
+}
+function fz(z) {                               // board z (mm) -> exploded model z; air above / below scaled like the stack
+  let lo = null, hi = null;
+  for (const o of layerObjs) {
+    if (z >= o.L.z0 - 1e-9 && z <= o.L.z1 + 1e-9) return o.z0 + (o.L.z1 > o.L.z0 ? (z - o.L.z0) / (o.L.z1 - o.L.z0) : 0) * (o.z1 - o.z0);
+    if (!hi || o.L.z1 > hi.L.z1) hi = o; if (!lo || o.L.z0 < lo.L.z0) lo = o;
+  }
+  if (hi && z > hi.L.z1) return hi.z1 + (z - hi.L.z1) * zScale();
+  if (lo && z < lo.L.z0) return lo.z0 - (lo.L.z0 - z) * zScale();
+  return 0;
+}
+function cuLayer(name) { return layerObjs.find((o) => o.L.type === 'copper' && o.L.name === name); }
+
+// ---- per-layer overlay objects
+function fldLayerObj(name, li) {
+  if (FLD.obj[name]) return FLD.obj[name];
+  const g = FLD.idx.grid, cvs = document.createElement('canvas'); cvs.width = g.nx; cvs.height = g.ny;
+  const ctx = cvs.getContext('2d'), img = ctx.createImageData(g.nx, g.ny);
+  const tex = new THREE.CanvasTexture(cvs); tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+  const w = g.dx * (g.nx - 1), h = g.dx * (g.ny - 1);
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(w + g.dx, h + g.dx),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+  plane.position.set(g.x0 + w / 2, g.y0 + h / 2, 0); plane.renderOrder = 6;
+  const st = Math.max(3, Math.round(Math.max(g.nx, g.ny) / 110)), pts = [];
+  const m = FLD.mask, off = li * g.nx * g.ny;
+  for (let j = Math.floor(st / 2); j < g.ny; j += st) for (let i = Math.floor(st / 2); i < g.nx; i += st) if (m[off + j * g.nx + i]) pts.push(j * g.nx + i);
+  const arrows = new THREE.InstancedMesh(arrowGeo(), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, depthWrite: false, transparent: true }), Math.max(pts.length, 1));
+  arrows.renderOrder = 8; arrows.count = pts.length; arrows.frustumCulled = false;
+  for (let i = 0; i < pts.length; i++) arrows.setColorAt(i, new THREE.Color(1, 1, 1));
+  const lines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
+  lines.renderOrder = 9; lines.frustumCulled = false;
+  const group = new THREE.Group(); group.add(plane, arrows, lines); model.add(group);
+  return (FLD.obj[name] = { name, li, cvs, ctx, img, tex, plane, arrows, lines, group, pts, st });
+}
+
+// ---- per-frame colouring / arrows / lines of the copper layers
+const _m4 = new THREE.Matrix4(), _c = new THREE.Color(), _e1 = new THREE.Vector3(), _e2 = new THREE.Vector3(), _e3 = new THREE.Vector3(0, 0, 1);
+function tval(mag, peak) {                     // 0..1 for colour and arrow length
+  if (!(mag > 0) || !(peak > 0)) return 0;
+  return FLD.scale === 'db' ? Math.max(0, Math.min(1, (20 * Math.log10(mag / peak) + FLD.range) / FLD.range)) : Math.min(1, mag / peak);
+}
+function fldPaintLayers(d) {
+  const I = FLD.idx, g = I.grid, n = g.nx * g.ny, c = Math.cos(FLD.phase * Math.PI / 180), s = Math.sin(FLD.phase * Math.PI / 180);
+  const names = I.layers.map((l) => l.name);
+  const doLines = FLD.show.lines && (!FLD.play || (FLD.frame++ % 3) === 0);     // lines every 3rd frame while animating
+  for (const o of layerObjs) {
+    if (o.L.type !== 'copper') continue;
+    let li = names.indexOf(o.L.name), pi = -1;
+    if (FLD.q === 'V') { pi = I.V.pairs.findIndex((p) => p[0] === o.L.name); if (pi < 0) li = -1; }
+    const ob = FLD.obj[o.L.name];
+    if (li < 0 || !o.visible) { if (ob) ob.group.visible = false; continue; }
+    const L = fldLayerObj(o.L.name, li); L.group.visible = true;
+    const px = L.img.data, m = FLD.mask, mo = li * n, A = d.a;
+    // instantaneous vectors (J) or scalar (V) of this layer
+    const vx = new Float32Array(n), vy = FLD.q === 'J' ? new Float32Array(n) : null;
+    if (FLD.q === 'J') {
+      const base = li * n * 4;
+      for (let p = 0; p < n; p++) {
+        const b = base + p * 4;
+        if (FLD.mode === 'peak') {               // major axis of the polarisation ellipse (static)
+          const ar = A[b], ai = A[b + 1], br = A[b + 2], bi = A[b + 3];
+          const s2r = ar * ar - ai * ai + br * br - bi * bi, s2i = 2 * (ar * ai + br * bi), ph = -Math.atan2(s2i, s2r) / 2;
+          const cc = Math.cos(ph), ss = Math.sin(ph);
+          vx[p] = ar * cc - ai * ss; vy[p] = br * cc - bi * ss;
+        } else { vx[p] = A[b] * c - A[b + 1] * s; vy[p] = A[b + 2] * c - A[b + 3] * s; }
+      }
+    } else {
+      const base = pi * n * 2;
+      for (let p = 0; p < n; p++) {
+        const b = base + p * 2;
+        vx[p] = FLD.mode === 'peak' ? Math.hypot(A[b], A[b + 1]) : A[b] * c - A[b + 1] * s;
+      }
+    }
+    const peak = d.peak;
+    if (FLD.show.map) {
+      for (let j = 0; j < g.ny; j++) {
+        const row = (g.ny - 1 - j) * g.nx;
+        for (let i = 0; i < g.nx; i++) {
+          const p = j * g.nx + i, q = (row + i) * 4;
+          if (!m[mo + p]) { px[q + 3] = 0; continue; }
+          let r, gg, bb;
+          if (FLD.q === 'J') {
+            const t = tval(Math.hypot(vx[p], vy[p]), peak), k3 = Math.round(t * 255) * 3;
+            r = LUT_MAG[k3]; gg = LUT_MAG[k3 + 1]; bb = LUT_MAG[k3 + 2];
+          } else if (FLD.mode === 'peak') {
+            const t = tval(vx[p], peak), k3 = Math.round(t * 255) * 3;
+            r = LUT_MAG[k3]; gg = LUT_MAG[k3 + 1]; bb = LUT_MAG[k3 + 2];
+          } else {
+            const t = 0.5 + 0.5 * Math.max(-1, Math.min(1, vx[p] / peak)), k3 = Math.round(t * 255) * 3;
+            r = LUT_DIV[k3]; gg = LUT_DIV[k3 + 1]; bb = LUT_DIV[k3 + 2];
+            px[q] = r; px[q + 1] = gg; px[q + 2] = bb;
+            px[q + 3] = Math.round(235 * Math.min(1, Math.abs(vx[p]) / (0.08 * peak)));   // ~0 V (planes, nodes): see-through
+            continue;
+          }
+          px[q] = r; px[q + 1] = gg; px[q + 2] = bb; px[q + 3] = 235;
+        }
+      }
+      L.ctx.putImageData(L.img, 0, 0); L.tex.needsUpdate = true;
+    }
+    L.plane.visible = FLD.show.map;
+    // arrows: J direction, length and colour by magnitude
+    L.arrows.visible = FLD.show.arrows && FLD.q === 'J';
+    if (L.arrows.visible) {
+      const len = L.st * g.dx * 0.95, wid = L.st * g.dx * 0.6;
+      for (let k = 0; k < L.pts.length; k++) {
+        const p = L.pts[k], j = Math.floor(p / g.nx), i = p - j * g.nx;
+        const mag = Math.hypot(vx[p], vy[p]), t = tval(mag, peak);
+        if (t <= 0.02) { _m4.makeScale(0, 0, 0); L.arrows.setMatrixAt(k, _m4); continue; }
+        _e1.set(vx[p] / mag, vy[p] / mag, 0); _e2.set(-_e1.y, _e1.x, 0);
+        const ls = len * (0.35 + 0.65 * t), ws = wid * (0.5 + 0.5 * t);
+        _m4.makeBasis(_e1.multiplyScalar(ls), _e2.multiplyScalar(ws), _e3);
+        _m4.setPosition(g.x0 + i * g.dx, g.y0 + j * g.dx, 0);
+        L.arrows.setMatrixAt(k, _m4);
+        const k3 = Math.round(Math.min(1, 0.25 + 0.75 * t) * 255) * 3;
+        _c.setRGB(LUT_MAG[k3] / 255, LUT_MAG[k3 + 1] / 255, LUT_MAG[k3 + 2] / 255, THREE.SRGBColorSpace);
+        L.arrows.setColorAt(k, FLD.show.map ? _c.setRGB(0.92, 0.97, 1) : _c);
+      }
+      L.arrows.instanceMatrix.needsUpdate = true; if (L.arrows.instanceColor) L.arrows.instanceColor.needsUpdate = true;
+    }
+    // current lines / iso-voltage lines
+    L.lines.visible = FLD.show.lines;
+    if (FLD.show.lines && doLines) {
+      const segs = FLD.q === 'J' ? streamlines2(vx, vy, m, mo, g.nx, g.ny, Math.max(5, Math.round(Math.max(g.nx, g.ny) / 90)), peak)
+                                 : isolines(vx, m, mo, g.nx, g.ny, peak);
+      fldSetLines(L.lines, segs, g.x0, g.y0, g.dx, 0);
+    }
+  }
+  if (doLines) FLD.linesAt = FLD.phase;
+  fldLayout();
+}
+function fldSetLines(obj, segs, x0, y0, dx, z, mapZ) {
+  const P = new Float32Array(segs.p.length / 2 * 3), C = new Float32Array(segs.p.length / 2 * 3);
+  for (let i = 0, n = segs.p.length / 2; i < n; i++) {
+    const a = segs.p[2 * i], b = segs.p[2 * i + 1];
+    if (mapZ) { P[3 * i] = mapZ[0](a, b); P[3 * i + 1] = mapZ[1](a, b); P[3 * i + 2] = mapZ[2](a, b); }
+    else { P[3 * i] = x0 + a * dx; P[3 * i + 1] = y0 + b * dx; P[3 * i + 2] = z; }
+    const t = segs.t[i], dark = FLD.show.map;
+    if (dark && FLD.q === 'E') { C[3 * i] = C[3 * i + 1] = C[3 * i + 2] = 0.55 + 0.45 * t; }   // on the dark |E| map
+    else if (dark) { C[3 * i] = C[3 * i + 1] = C[3 * i + 2] = 0.08 + 0.15 * (1 - t); }
+    else { const k3 = Math.round(Math.min(1, 0.3 + 0.7 * t) * 255) * 3; C[3 * i] = LUT_MAG[k3] / 255; C[3 * i + 1] = LUT_MAG[k3 + 1] / 255; C[3 * i + 2] = LUT_MAG[k3 + 2] / 255; }
+  }
+  obj.geometry.dispose(); obj.geometry = new THREE.BufferGeometry();
+  obj.geometry.setAttribute('position', new THREE.BufferAttribute(P, 3)); obj.geometry.setAttribute('color', new THREE.BufferAttribute(C, 3));
+}
+
+// Evenly spaced streamlines (Jobard-Lefer) of a 2D field on a pixel grid; returns line segments in pixel
+// coordinates {p: [x, y, x, y, ...] (pairs of points), t: [0..1 per point]} with a chevron every few steps.
+function streamlines2(vx, vy, mask, mo, nx, ny, dsep, peak, minRel = 0.03) {
+  const occ = new Int32Array(Math.ceil(nx / (dsep * 0.5)) * Math.ceil(ny / (dsep * 0.5))).fill(-1), cs = dsep * 0.5, gw = Math.ceil(nx / cs);
+  const mag = (i, j) => Math.hypot(vx[j * nx + i], vy[j * nx + i]);
+  const thr = minRel * peak;
+  const ok = (p) => (mask ? mask[mo + p] : 1) && Math.hypot(vx[p], vy[p]) > thr;
+  const field = (x, y) => {
+    if (x < 0 || y < 0 || x > nx - 1.001 || y > ny - 1.001) return null;
+    const i = x | 0, j = y | 0, fx = x - i, fy = y - j, p = j * nx + i;
+    if (!(ok(p) || ok(p + nx + 1))) return null;
+    const u = (vx[p] * (1 - fx) + vx[p + 1] * fx) * (1 - fy) + (vx[p + nx] * (1 - fx) + vx[p + nx + 1] * fx) * fy;
+    const v = (vy[p] * (1 - fx) + vy[p + 1] * fx) * (1 - fy) + (vy[p + nx] * (1 - fx) + vy[p + nx + 1] * fx) * fy;
+    const m = Math.hypot(u, v); return m > thr ? [u / m, v / m, m] : null;
+  };
+  const cell = (x, y) => Math.min(Math.floor(y / cs), Math.ceil(ny / cs) - 1) * gw + Math.min(Math.floor(x / cs), gw - 1);
+  const free = (x, y, id, d) => {
+    const ci = Math.floor(x / cs), cj = Math.floor(y / cs), r = Math.ceil(d / cs), gh = Math.ceil(ny / cs);
+    for (let jj = Math.max(cj - r, 0); jj <= Math.min(cj + r, gh - 1); jj++)
+      for (let ii = Math.max(ci - r, 0); ii <= Math.min(ci + r, gw - 1); ii++) { const o = occ[jj * gw + ii]; if (o >= 0 && o !== id) return false; }
+    return true;
+  };
+  const trace = (x, y, sg, id) => {
+    const pts = [];
+    for (let n = 0; n < 4000; n++) {
+      const a = field(x, y); if (!a) break;
+      const b = field(x + sg * 0.5 * a[0], y + sg * 0.5 * a[1]); if (!b) break;
+      x += sg * 0.5 * (a[0] + b[0]); y += sg * 0.5 * (a[1] + b[1]);
+      if (!free(x, y, id, dsep * 0.5)) break;
+      if (pts.length > 16 && Math.hypot(x - pts[0][0], y - pts[0][1]) < 0.6) break;
+      pts.push([x, y, a[2], a[0] * sg, a[1] * sg]);
+    }
+    return pts;
+  };
+  // seeds: strongest field first, on a coarse lattice
+  const seeds = [];
+  const st = Math.max(1, Math.floor(dsep / 2));
+  for (let j = 0; j < ny; j += st) for (let i = 0; i < nx; i += st) { const p = j * nx + i; if (ok(p)) seeds.push([mag(i, j), i, j]); }
+  seeds.sort((a, b) => b[0] - a[0]);
+  const P = [], T = [];
+  let id = 0;
+  for (const [, i, j] of seeds) {
+    if (!free(i, j, -2, dsep)) continue;
+    const fw = trace(i, j, 1, id), bw = trace(i, j, -1, id);
+    const pts = bw.reverse().map((q) => [q[0], q[1], q[2], -q[3], -q[4]]).concat(fw);
+    if (pts.length < 6) continue;
+    for (const q of pts) occ[cell(q[0], q[1])] = id;
+    for (let k = 1; k < pts.length; k++) {
+      const a = pts[k - 1], b = pts[k], t = tval(b[2], peak);
+      P.push(a[0], a[1], b[0], b[1]); T.push(t, t);
+      if (k % 14 === 7) {                     // chevron pointing along the field
+        const h = dsep * 0.28, dx = b[3], dy = b[4];
+        for (const sgn of [1, -1]) { P.push(b[0], b[1], b[0] - h * (dx + sgn * 0.6 * dy), b[1] - h * (dy - sgn * 0.6 * dx)); T.push(t, t); }
+      }
+    }
+    if (++id > 2500) break;
+  }
+  return { p: P, t: T };
+}
+// iso-lines (marching squares) of a scalar field at 10 levels between -peak and +peak, masked
+function isolines(v, mask, mo, nx, ny, peak) {
+  // only well inside the copper (the mask is grown by a pixel and V falls off beside a trace: lines along
+  // the trace edges said nothing); what is left are the lines across the copper where V passes a level
+  const er = new Uint8Array(nx * ny);
+  for (let j = 2; j < ny - 2; j++) for (let i = 2; i < nx - 2; i++) {
+    let ok = 1;
+    for (let d = -2; d <= 2 && ok; d++) ok = mask[mo + (j + d) * nx + i] && mask[mo + j * nx + i + d];
+    er[j * nx + i] = ok;
+  }
+  mask = er; mo = 0;
+  const P = [], T = [], lv = [-0.9, -0.7, -0.5, -0.3, -0.1, 0.1, 0.3, 0.5, 0.7, 0.9].map((x) => x * peak);
+  for (const L of lv) {
+    const t = Math.abs(L) / peak;
+    for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+      const p = j * nx + i;
+      if (!(mask[mo + p] && mask[mo + p + 1] && mask[mo + p + nx] && mask[mo + p + nx + 1])) continue;
+      const a = v[p] - L, b = v[p + 1] - L, c = v[p + nx + 1] - L, d = v[p + nx] - L;
+      const e = [];
+      if ((a > 0) !== (b > 0)) e.push([i + a / (a - b), j]);
+      if ((b > 0) !== (c > 0)) e.push([i + 1, j + b / (b - c)]);
+      if ((c > 0) !== (d > 0)) e.push([i + 1 - c / (c - d), j + 1]);
+      if ((d > 0) !== (a > 0)) e.push([i, j + 1 - d / (d - a)]);
+      for (let k = 0; k + 1 < e.length; k += 2) { P.push(e[k][0], e[k][1], e[k + 1][0], e[k + 1][1]); T.push(t, t); }
+    }
+  }
+  return { p: P, t: T };
+}
+
+// ---- E cut plane
+function fldCut(d) {
+  const E = FLD.idx.E, ax = FLD.cut.ax, X = E.x, Y = E.y, Z = E.z, nx = X.length, ny = Y.length, nz = Z.length;
+  const lat = ax === 'x' ? Y : X, axis = ax === 'x' ? X : Y, nl = lat.length;
+  const pos = axis[0] + FLD.cut.pos * (axis[axis.length - 1] - axis[0]);
+  let k0 = 0; while (k0 < axis.length - 2 && axis[k0 + 1] < pos) k0++;
+  const w = Math.min(1, Math.max(0, (pos - axis[k0]) / (axis[k0 + 1] - axis[k0])));
+  const c = Math.cos(FLD.phase * Math.PI / 180), s = Math.sin(FLD.phase * Math.PI / 180), A = d.a;
+  const at = (iz, il, comp) => {               // instantaneous component at (z line, lateral line) on the cut
+    const v = (ix, iy) => { const b = (((iz * ny + iy) * nx + ix) * 6) + comp * 2; return FLD.mode === 'peak' ? Math.hypot(A[b], A[b + 1]) : A[b] * c - A[b + 1] * s; };
+    return ax === 'x' ? v(k0, il) * (1 - w) + v(k0 + 1, il) * w : v(il, k0) * (1 - w) + v(il, k0 + 1) * w;
+  };
+  if (FLD.autoCut && FLD.mode !== 'peak' && !FLD.play) {   // first look at a cut: the instant of the strongest field
+    let sr = 0, si = 0, best = 0, bl = 0, bz = 0;
+    const cu0 = ax === 'x' ? 1 : 0;
+    for (let iz = 0; iz < nz; iz++) for (let il = 0; il < nl; il++) for (const comp of [cu0, 2]) {
+      const v = (ix, iy) => { const b = (((iz * ny + iy) * nx + ix) * 6) + comp * 2; return [A[b], A[b + 1]]; };
+      const [re, im] = ax === 'x' ? v(k0, il) : v(il, k0);
+      sr += re * re - im * im; si += 2 * re * im;
+      const m = Math.hypot(re, im); if (m > best) { best = m; bl = lat[il]; bz = Z[iz]; }
+    }
+    FLD.phase = ((-Math.atan2(si, sr) / 2) * 180 / Math.PI + 360) % 360; $('fldPh').value = FLD.phase; $('fldPhV').textContent = FLD.phase.toFixed(0) + '°';
+    FLD.autoCut = false; FLD.lookAt = { pos, lat: bl, z: bz, ax };
+  }
+  const c2 = Math.cos(FLD.phase * Math.PI / 180), s2 = Math.sin(FLD.phase * Math.PI / 180);
+  const at2 = (iz, il, comp) => {
+    const v = (ix, iy) => { const b = (((iz * ny + iy) * nx + ix) * 6) + comp * 2; return FLD.mode === 'peak' ? Math.hypot(A[b], A[b + 1]) : A[b] * c2 - A[b + 1] * s2; };
+    return ax === 'x' ? v(k0, il) * (1 - w) + v(k0 + 1, il) * w : v(il, k0) * (1 - w) + v(il, k0 + 1) * w;
+  };
+  const cu = ax === 'x' ? 1 : 0;               // in-plane lateral component: Ey across x, Ex across y
+  const eu = new Float32Array(nl * nz), ez = new Float32Array(nl * nz);
+  for (let iz = 0; iz < nz; iz++) for (let il = 0; il < nl; il++) { eu[iz * nl + il] = at2(iz, il, cu); ez[iz * nl + il] = at2(iz, il, 2); }
+  const peak = d.peak;
+  if (!FLD.cutObj) {
+    const grp = new THREE.Group();
+    const geo = new THREE.BufferGeometry(), idx = [], uv = new Float32Array(nl * nz * 2);
+    for (let iz = 0; iz < nz - 1; iz++) for (let il = 0; il < nl - 1; il++) { const p = iz * nl + il; idx.push(p, p + 1, p + nl + 1, p, p + nl + 1, p + nl); }
+    for (let iz = 0; iz < nz; iz++) for (let il = 0; il < nl; il++) { uv[2 * (iz * nl + il)] = (il + 0.5) / nl; uv[2 * (iz * nl + il) + 1] = (iz + 0.5) / nz; }
+    geo.setIndex(idx);
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nl * nz * 3), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(nl * nz * 3).fill(0.5), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    const cvs = document.createElement('canvas'); cvs.width = nl; cvs.height = nz;
+    const tex = new THREE.CanvasTexture(cvs); tex.colorSpace = THREE.SRGBColorSpace; tex.flipY = false;
+    tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearFilter;
+    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true, depthWrite: false }));
+    mesh.userData.cvs = cvs; mesh.userData.tex = tex; mesh.userData.img = cvs.getContext('2d').createImageData(nl, nz);
+    mesh.renderOrder = 7;
+    const arrows = new THREE.InstancedMesh(arrowGeo(), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, depthWrite: false, transparent: true }), nl * nz);
+    arrows.renderOrder = 8; arrows.frustumCulled = false;
+    for (let i = 0; i < nl * nz; i++) arrows.setColorAt(i, new THREE.Color(1, 1, 1));
+    const lines = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
+    lines.renderOrder = 9; lines.frustumCulled = false;
+    grp.add(mesh, arrows, lines); model.add(grp);
+    FLD.cutObj = Object.assign(grp, { mesh, arrows, lines, nl, nz });
+  }
+  const o = FLD.cutObj, P = o.mesh.geometry.attributes.position, im = o.mesh.userData.img.data;
+  const zv = Z.map(fz);
+  const put = (il, iz) => ax === 'x' ? [pos, lat[il], zv[iz]] : [lat[il], pos, zv[iz]];
+  for (let iz = 0; iz < nz; iz++) for (let il = 0; il < nl; il++) {
+    const p = iz * nl + il, q = put(il, iz);
+    P.setXYZ(p, q[0], q[1], q[2]);
+    const t = tval(Math.hypot(eu[p], ez[p]), peak), k3 = Math.round(t * 255) * 3;
+    im[4 * p] = LUT_MAG[k3]; im[4 * p + 1] = LUT_MAG[k3 + 1]; im[4 * p + 2] = LUT_MAG[k3 + 2];
+    im[4 * p + 3] = Math.round(240 * Math.min(1, t * 2.5));        // weak field: see-through
+  }
+  o.mesh.userData.cvs.getContext('2d').putImageData(o.mesh.userData.img, 0, 0); o.mesh.userData.tex.needsUpdate = true;
+  P.needsUpdate = true; o.mesh.geometry.computeBoundingSphere();
+  o.mesh.visible = FLD.show.map;
+  // the copper cut by the plane (from the layer masks), so the field is read against the metal
+  if (o.cu) { o.cu.removeFromParent(); o.cu.geometry.dispose(); }
+  {
+    const I = FLD.idx, g = I.grid, n = g.nx * g.ny, boxes = [];
+    I.layers.forEach((l, li) => {
+      const ob = cuLayer(l.name); if (!ob) return;
+      const th = Math.max(ob.z1 - ob.z0, 0.01), zc = (ob.z0 + ob.z1) / 2;
+      const N = ax === 'x' ? g.ny : g.nx, fix = ax === 'x' ? Math.round((pos - g.x0) / g.dx) : Math.round((pos - g.y0) / g.dx);
+      if (fix < 0 || fix >= (ax === 'x' ? g.nx : g.ny)) return;
+      const on = (k) => FLD.mask[li * n + (ax === 'x' ? k * g.nx + fix : fix * g.nx + k)];
+      let a = -1;
+      for (let k = 0; k <= N; k++) {
+        const v = k < N && on(k);
+        if (v && a < 0) a = k;
+        if (!v && a >= 0) { const l0 = (ax === 'x' ? g.y0 : g.x0) + (a + 0.5) * g.dx, l1 = (ax === 'x' ? g.y0 : g.x0) + (k - 0.5) * g.dx; boxes.push([l0, l1, zc, th]); a = -1; }
+      }
+    });
+    const geo = new THREE.BoxGeometry(1, 1, 1), cu = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0xc8823c }), Math.max(boxes.length, 1));
+    cu.count = boxes.length; cu.frustumCulled = false; cu.renderOrder = 6;
+    boxes.forEach(([l0, l1, zc, th], k) => {
+      const L = Math.max(l1 - l0, 0.01), m = (l0 + l1) / 2;
+      _m4.makeScale(ax === 'x' ? 0.002 : L, ax === 'x' ? L : 0.002, th); _m4.setPosition(ax === 'x' ? pos : m, ax === 'x' ? m : pos, zc);
+      cu.setMatrixAt(k, _m4);
+    });
+    o.add(cu); o.cu = cu;
+  }
+  // a uniform (lateral, z) grid in true millimetres for the arrows and the E-field lines, mapped into the view
+  const zmin = Z[0], zmax = Z[nz - 1], lmin = lat[0], lmax = lat[nl - 1];
+  const dzmin = Math.min(...Z.slice(1).map((v, i) => v - Z[i]).filter((v) => v > 1e-6));
+  const h = Math.max(dzmin * 0.7, (zmax - zmin) / 400, (lmax - lmin) / 1600);
+  const NX = Math.min(1600, Math.ceil((lmax - lmin) / h) + 1), NZ = Math.min(500, Math.ceil((zmax - zmin) / h) + 1);
+  const ux = new Float32Array(NX * NZ), uz = new Float32Array(NX * NZ);
+  const li = (src, v) => { let k = 0; while (k < src.length - 2 && src[k + 1] < v) k++; return [k, Math.min(1, Math.max(0, (v - src[k]) / (src[k + 1] - src[k])))]; };
+  const LI = Array.from({ length: NX }, (_, i) => li(lat, lmin + i * h)), ZI = Array.from({ length: NZ }, (_, j) => li(Z, zmin + j * h));
+  for (let j = 0; j < NZ; j++) for (let i = 0; i < NX; i++) {
+    const [a, fa] = LI[i], [b, fb] = ZI[j];
+    const g2 = (F) => (F[b * nl + a] * (1 - fa) + F[b * nl + a + 1] * fa) * (1 - fb) + (F[(b + 1) * nl + a] * (1 - fa) + F[(b + 1) * nl + a + 1] * fa) * fb;
+    ux[j * NX + i] = g2(eu); uz[j * NX + i] = g2(ez);
+  }
+  const view = FLD.viewSpan || (lmax - lmin) / 3;
+  const P3 = (a, b) => ax === 'x' ? [pos, lmin + a * h, fz(zmin + b * h)] : [lmin + a * h, pos, fz(zmin + b * h)];
+  // arrows: about 24 across the framed view
+  o.arrows.visible = FLD.show.arrows;
+  if (o.arrows.visible) {
+    const st = Math.max(2, Math.round(view / 24 / h)), need = Math.ceil(NX / st) * Math.ceil(NZ / st);
+    if (o.arrows.instanceMatrix.count < need) {
+      o.arrows.removeFromParent(); o.arrows.geometry.dispose();
+      o.arrows = new THREE.InstancedMesh(arrowGeo(), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, depthWrite: false, transparent: true }), need);
+      o.arrows.renderOrder = 8; o.arrows.frustumCulled = false;
+      for (let i = 0; i < need; i++) o.arrows.setColorAt(i, new THREE.Color(1, 1, 1));
+      o.add(o.arrows);
+    }
+    const nrm = new THREE.Vector3(ax === 'x' ? 1 : 0, ax === 'x' ? 0 : 1, 0), len = st * h * 0.85;
+    let k = 0;
+    for (let j = Math.floor(st / 2); j < NZ; j += st) for (let i = Math.floor(st / 2); i < NX; i += st) {
+      const p = j * NX + i, mg = Math.hypot(ux[p], uz[p]), t = tval(mg, peak);
+      if (t <= 0.05) continue;
+      const zt = zmin + j * h, dzs = (fz(zt + 1e-3) - fz(zt - 1e-3)) / 2e-3;
+      const du = ux[p], dz = uz[p] * dzs, l = Math.hypot(du, dz) || 1;
+      _e1.set(ax === 'x' ? 0 : du / l, ax === 'x' ? du / l : 0, dz / l); _e2.copy(nrm).cross(_e1);
+      const q = P3(i, j), ls = len * (0.35 + 0.65 * t);
+      _m4.makeBasis(_e1.multiplyScalar(ls), _e2.multiplyScalar(ls * 0.5), nrm); _m4.setPosition(q[0], q[1], q[2]);
+      o.arrows.setMatrixAt(k, _m4);
+      const k3 = Math.round(t * 255) * 3;
+      o.arrows.setColorAt(k, FLD.show.map ? _c.setRGB(0.95, 0.98, 1) : _c.setRGB(LUT_MAG[k3] / 255, LUT_MAG[k3 + 1] / 255, LUT_MAG[k3 + 2] / 255, THREE.SRGBColorSpace));
+      k++;
+    }
+    o.arrows.count = k; o.arrows.instanceMatrix.needsUpdate = true; if (o.arrows.instanceColor) o.arrows.instanceColor.needsUpdate = true;
+  }
+  // E-field lines: evenly spaced streamlines, about 30 across the framed view
+  o.lines.visible = FLD.show.lines;
+  if (FLD.show.lines) {
+    const segs = streamlines2(ux, uz, null, 0, NX, NZ, Math.max(4, Math.round(view / 30 / h)), peak, 0.02);
+    fldSetLines(o.lines, segs, 0, 0, 1, 0, [(a, b) => P3(a, b)[0], (a, b) => P3(a, b)[1], (a, b) => P3(a, b)[2]]);
+  }
+}
+
+// ---- legend and frame
+function fldLegend(d) {
+  const cv = $('fldBar'), dpr = Math.min(window.devicePixelRatio, 2), W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext('2d'); g.scale(dpr, dpr); g.clearRect(0, 0, W, H);
+  const signed = FLD.q === 'V' && FLD.mode !== 'peak', L = signed ? LUT_DIV : LUT_MAG;
+  for (let x = 0; x < W; x++) { const k3 = Math.round(x / (W - 1) * 255) * 3; g.fillStyle = `rgb(${L[k3]},${L[k3 + 1]},${L[k3 + 2]})`; g.fillRect(x, 0, 1, 12); }
+  g.fillStyle = css('--muted'); g.font = '10.5px ' + css('--font-data'); g.textBaseline = 'top';
+  const u = FLD.q === 'J' ? 'A/m' : FLD.q === 'V' ? 'V' : 'V/m', pk = d.peak, f = (v) => v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toPrecision(2);
+  const lab = signed ? [[0, '−' + f(pk)], [0.5, '0'], [1, '+' + f(pk) + ' ' + u]]
+    : FLD.scale === 'db' ? [[0, '−' + FLD.range + ' dB'], [0.5, '−' + FLD.range / 2], [1, '0 dB = ' + f(pk) + ' ' + u]] : [[0, '0'], [1, f(pk) + ' ' + u]];
+  for (const [t, s] of lab) { g.textAlign = t === 0 ? 'left' : t === 1 ? 'right' : 'center'; g.fillText(s, t * W, 16); }
+  const I = FLD.idx;
+  $('fldInfo').textContent = `${I.f_GHz[FLD.k].toFixed(2)} GHz · P${FLD.exc} driven with ${I.power_W || 1} W incident · ` +
+    (FLD.mode === 'peak' ? 'peak over the cycle' : `phase ${FLD.phase.toFixed(0)}°`) +
+    (FLD.q === 'J' ? ' · surface current density Js' : FLD.q === 'V' ? ' · voltage of each copper layer against the next one down' : ` · E-field on the cut across ${FLD.cut.ax}`);
+}
+async function fldRender() {
+  if (!FLD.idx || FLD.busy) return;
+  const vis = FLD.on;
+  if (portGroup) portGroup.visible = !vis;             // the port markers would sit in front of the fields
+  const cutView = vis && FLD.q === 'E';
+  if (cutView && FLD.zsBefore == null) {               // true proportions in the cross-section
+    FLD.zsBefore = $('zscale').value; $('zscale').value = 0; layout();
+    if (FLD.cutObj) { FLD.cutObj.removeFromParent(); FLD.cutObj = null; }
+  } else if (!cutView && FLD.zsBefore != null) { $('zscale').value = FLD.zsBefore; FLD.zsBefore = null; layout(); }
+  if (cutView) {                                       // a clean cross-section: the board is drawn by the cut itself
+    for (const o of layerObjs) if (o.mesh) o.mesh.visible = false;
+    for (const o of compObjs) o.mesh.visible = false;
+    for (const o of simObjs) o.mesh.visible = false;
+    if (barrels) barrels.visible = false;
+    FLD.hid = true;
+  } else if (FLD.hid) { FLD.hid = false; applyVisibility(); return; }
+  for (const k of Object.keys(FLD.obj)) FLD.obj[k].group.visible = false;
+  if (FLD.cutObj) FLD.cutObj.visible = false;
+  if (!vis) { wake(2); return; }
+  FLD.busy = true;
+  try {
+    const d = await fldData(FLD.q);
+    if (!d) { $('fldNote').textContent = 'No data for this port and frequency.'; return; }
+    if (FLD.q === 'E') { fldCut(d); FLD.cutObj.visible = true; if (FLD.lookAt) { fldLook(FLD.lookAt); FLD.lookAt = null; } }
+    else fldPaintLayers(d);
+    fldLegend(d);
+  } catch (err) { $('fldNote').textContent = String(err.message || err); }
+  finally { FLD.busy = false; wake(2); }
+}
+function fldLook(L) {                         // camera square onto the cut, around the strongest field
+  const zs = layerObjs.filter((o) => o.L.type === 'copper').map((o) => (o.z0 + o.z1) / 2).sort((a, b) => b - a);
+  const zc = fz(L.z);
+  const c = L.ax === 'x' ? new THREE.Vector3(L.pos, L.lat, zc) : new THREE.Vector3(L.lat, L.pos, zc);
+  const n = L.ax === 'x' ? new THREE.Vector3(L.pos + 1, L.lat, zc) : new THREE.Vector3(L.lat, L.pos + 1, zc);
+  model.updateMatrixWorld(true);
+  const cw = model.localToWorld(c.clone()), nw = model.localToWorld(n.clone()).sub(cw).normalize();
+  const gap = zs.length > 1 ? Math.min(...zs.slice(1).map((v, i) => zs[i] - v).filter((v) => v > 1e-6)) : 1;
+  const span = Math.max(2.5, gap * 7);
+  FLD.viewSpan = span;
+  const dist = span / (2 * Math.tan(camera.fov * Math.PI / 360));
+  controls.target.copy(cw); camera.position.copy(cw).addScaledVector(nw, -dist);
+  camera.updateProjectionMatrix(); controls.update(); wake(4);
+}
+function fldLayout() {                         // exploded layout / z scale changed: overlay planes follow their layer
+  for (const k of Object.keys(FLD.obj)) {
+    const o = cuLayer(k), L = FLD.obj[k];
+    if (!o) continue;
+    const z = o.z1 + Math.max(0.002, (o.z1 - o.z0) * 0.05);
+    L.plane.position.z = z; L.arrows.position.z = z + 0.001; L.lines.position.z = z + 0.002;
+  }
+  if (FLD.cutObj && FLD.on && FLD.q === 'E') { FLD.linesAt = -1; fldRender(); }
+}
+function fldSync() {
+  $('fldOn').classList.toggle('on', FLD.on);
+  $('fldPhV').textContent = FLD.mode === 'peak' ? 'peak' : FLD.phase.toFixed(0) + '°';
+  $('fldPh').disabled = FLD.mode === 'peak'; $('fldPlay').disabled = FLD.mode === 'peak';
+  $('fldCutRow').hidden = FLD.q !== 'E';
+  document.querySelectorAll('[data-fd]').forEach((b) => b.classList.toggle('on', !!FLD.show[b.dataset.fd]));
+  $('fldLinesBtn').textContent = FLD.q === 'V' ? 'Iso-voltage lines' : FLD.q === 'E' ? 'E-field lines' : 'Current lines';
+  $('fldArrBtn').disabled = FLD.q === 'V';
+  fldRender();
+}
+let fldT = 0;
+function fldTick(now) {
+  if (!FLD.play) return;
+  if (now - fldT > 40 && !FLD.busy) {
+    fldT = now; FLD.phase = (FLD.phase + 6 * FLD.speed) % 360; $('fldPh').value = FLD.phase;
+    $('fldPhV').textContent = FLD.phase.toFixed(0) + '°';
+    fldRender();
+  }
+  requestAnimationFrame(fldTick);
+}
+function fldCompact() {                      // fields are read in the real stack: no exploded gaps
+  if (+$('explode').value > 0) { FLD.explode = $('explode').value; $('explode').value = 0; layout(); }
+}
+$('fldOn').addEventListener('click', () => {
+  FLD.on = !FLD.on;
+  if (FLD.on) fldCompact(); else if (FLD.explode != null) { $('explode').value = FLD.explode; FLD.explode = null; layout(); }
+  fldSync();
+});
+$('fldExc').addEventListener('change', () => { FLD.exc = +$('fldExc').value; FLD.linesAt = -1; fldSync(); });
+$('fldF').addEventListener('change', () => { FLD.k = +$('fldF').value; FLD.linesAt = -1; fldSync(); });
+$('fldQ').addEventListener('change', () => { FLD.q = $('fldQ').value; FLD.linesAt = -1; if (FLD.q === 'E') FLD.autoCut = true; if (!FLD.on) { FLD.on = true; fldCompact(); } fldSync(); });
+$('fldMode').addEventListener('change', () => { FLD.mode = $('fldMode').value; if (FLD.mode === 'peak') { FLD.play = false; $('fldPlay').textContent = '▶ Animate'; } FLD.linesAt = -1; fldSync(); });
+$('fldScale').addEventListener('change', () => { FLD.scale = $('fldScale').value; FLD.linesAt = -1; fldSync(); });
+$('fldPh').addEventListener('input', () => { FLD.phase = +$('fldPh').value; fldSync(); });
+$('fldSpeed').addEventListener('change', () => { FLD.speed = +$('fldSpeed').value; });
+$('fldPlay').addEventListener('click', () => {
+  FLD.play = !FLD.play; $('fldPlay').textContent = FLD.play ? '❚❚ Pause' : '▶ Animate';
+  if (FLD.play) { if (!FLD.on) { FLD.on = true; fldCompact(); $('fldOn').classList.add('on'); } requestAnimationFrame(fldTick); } else { FLD.linesAt = -1; fldRender(); }
+});
+document.querySelectorAll('[data-fd]').forEach((b) => b.addEventListener('click', () => { FLD.show[b.dataset.fd] = !FLD.show[b.dataset.fd]; FLD.linesAt = -1; fldSync(); }));
+$('fldCutAx').addEventListener('change', () => { FLD.cut.ax = $('fldCutAx').value; FLD.autoCut = true; if (FLD.cutObj) { FLD.cutObj.removeFromParent(); FLD.cutObj = null; } fldSync(); });
+$('fldCutPos').addEventListener('input', () => { FLD.cut.pos = +$('fldCutPos').value / 1000; fldRender(); });
 function tdr(res, k, z0) {
   // step response of S11 by the inverse DFT of the band-limited reflection (Hann window); needs a uniform
   // grid that starts near df (the twin runs fmin = fmax/nf). Returns {t_ns[], z[]}.
@@ -1022,6 +1688,7 @@ function applyVisibility() {
   $('showAll').textContent = `Show hidden (${nh})`; $('showAll').disabled = nh === 0;
   $('hideSel').disabled = !(selected && selected.kind === 'comp');
   $('barrels').classList.toggle('on', showBarrels);
+  if (FLD.on) fldRender();
 }
 
 // ---------------------------------------------------------------- stackup list and cross-section
@@ -1946,7 +2613,7 @@ if (await initServer()) {
 } catch (err) {
   $('status').innerHTML = '<div><b>Open a board</b>Drop a .kicad_pcb or .z2v.json file here, or use “Open board file” in the inspector.</div>';
 }
-window.__viewer = { layout, setView, select, get B() { return B; }, compObjs, layerObjs };
+window.__viewer = { layout, setView, select, get B() { return B; }, compObjs, layerObjs, FLD };
 </script>
 
 </body>

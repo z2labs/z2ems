@@ -4,3 +4,6 @@ __pycache__/
 /build/
 *_sim/
 /twin/out*/
+gui/viewer/index.local.html
+gui/viewer/py/
+gui/viewer/three/

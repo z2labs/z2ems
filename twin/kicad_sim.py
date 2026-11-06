@@ -794,9 +794,9 @@ def build(board, ports, fmin, fmax, excite, copper='sheet', with_mask=False, coa
         pobj.append(FDTD.AddLumpedPort(p['number'], z0, st, sp, 'z', excite=ex))
     nl = [len(g.GetLines(a)) for a in 'xyz']
     dumps = []
-    if fields:                                    # current maps (simulate() asks for them on the first excitation)
+    if fields:                                    # surface currents + E volume (fields.py), every excitation
         import fields as fmod
-        dumps = fmod.add_dumps(CSX, board, fields['freqs'], fields.get('layers'))
+        dumps = fmod.add_dumps(CSX, board, fields['freqs'], fields.get('layers'), volume=fields.get('volume', True), z_lines=Z)
     er = max([l.epsilon_r or 1.0 for l in board.stackup if l.type in ('prepreg', 'core')] + [1.0])
     quality = mesh_quality([g.GetLines(a) for a in 'xyz'], fmax, er, res)
     return FDTD, CSX, pobj, dict(mesh=nl, mcells=float(np.prod(nl) / 1e6), res_mm=res, dumps=dumps, quality=quality)
@@ -1107,7 +1107,7 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
         S[:] = np.nan
     for e in exc:
         FDTD, CSX, pobj, meta = build(board, ports, fmin, fmax, e, copper=copper, with_mask=with_mask, coarse=coarse, refine=refine, materials=materials,
-                                      fields=fields if e == exc[0] else None)
+                                      fields=fields)
         cdir = os.path.join(out, 'exc%d' % e)
         os.makedirs(cdir, exist_ok=True)
         xml = os.path.join(cdir, 'model.xml')
@@ -1128,13 +1128,27 @@ def simulate(board_file, port_refs, fmin, fmax, out, fab=None, variant=None, thr
         for i, p in enumerate(pobj):
             S[:, i, e - 1] = p.uf_ref / a
         runs.append(r)
-        if meta.get('dumps'):
+        if meta.get('dumps') and not (field_res or {}).get('error'):
             import fields as fmod
+            uinc, z0e = np.asarray(pobj[e - 1].uf_inc, complex), float(ports[e - 1].get('z0', 50.0))
+
+            def norm(fh, uinc=uinc, z0e=z0e):           # raw dump -> 1 W incident at the driven port
+                u = np.interp(fh, f, uinc.real) + 1j * np.interp(fh, f, uinc.imag)
+                return math.sqrt(2.0 * z0e * fmod.POWER_W) / u if abs(u) > 0 else 1.0
             try:
-                field_res = fmod.export(os.path.join(cdir, 'sim'), os.path.join(out, 'fields'), board, meta['dumps'])
-            except Exception as ex:                    # the S-parameters stay valid without the maps
+                field_res = fmod.export(os.path.join(cdir, 'sim'), os.path.join(out, 'fields'), board, meta['dumps'],
+                                        excite=e, norm=norm, index=field_res)
+            except Exception as ex:                    # the S-parameters stay valid without the fields
+                import traceback
+                traceback.print_exc()
                 field_res = dict(error='%s: %s' % (type(ex).__name__, ex))
-            log('  current maps: %s' % ('%d layers' % len(field_res.get('maps', {})) if field_res and 'maps' in field_res else field_res))
+            if field_res.get('error'):
+                log('  fields: %s' % field_res['error'])
+            else:
+                log('  fields: %d layers, E volume %s, peak |Js| %s A/m, |V| %s V (1 W)' % (
+                    len(field_res.get('layers', [])), 'x'.join(str(len(field_res['E'][a])) for a in 'xyz') if 'E' in field_res else 'none',
+                    ', '.join('%.3g' % v for v in field_res.get('J', {}).get('peak', {}).get('e%d' % e, {}).values()),
+                    ', '.join('%.3g' % v for v in field_res.get('V', {}).get('peak', {}).get('e%d' % e, {}).values())))
     src = os.path.splitext(os.path.basename(board_file))[0]
     write_touchstone(os.path.join(out, '%s.s%dp' % (src, n)), f, S,
                      comment='openEMS-z2labs kicad_sim, %s\nports: %s\nstackup: %s\ncopper: %s, mask: %s' % (
