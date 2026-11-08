@@ -571,7 +571,11 @@ class Handler(BaseHTTPRequestHandler):
                                             variant=ks.DEFAULT_VARIANT, threads=_TWIN.threads,
                                             cuda=_cuda_state(), cuda_engine=ks.VARIANTS['cuda']['exe'],
                                             ports_api=2,      # 2: + pad / - pads or plane (kicad_sim.port_from_spec)
-                                            fields_api=2))    # 2: Js, E volume, layer voltages, /api/field_overlay
+                                            fields_api=2,     # 2: Js, E volume, layer voltages, /api/field_overlay
+                                            # who this server is: a client (the KiCad plugin) replaces a server of
+                                            # another engine folder or version, since a server outlives its client
+                                            root=ENGINE_ROOT, version=ENGINE_VERSION, pid=os.getpid(),
+                                            busy=sum(1 for j in list(_TWIN.jobs.values()) if j.state in ('queued', 'running'))))
             if u.path == '/api/boards':
                 return self._send(200, dict(boards=_TWIN.list_boards(), folder=_TWIN.root))
             if u.path == '/api/runs':
@@ -611,6 +615,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err(413, 'board file missing or larger than %d MB' % (MAX_UPLOAD >> 20))
                 qq = parse_qs(u.query)
                 return self._send(200, _TWIN.upload(qq.get('name', [''])[0], self.rfile.read(n), qq.get('project', [None])[0]))
+            if u.path == '/api/shutdown':
+                if TOKEN is None and self.client_address[0] not in ('127.0.0.1', '::1'):
+                    return self._err(403, 'shutdown only from this computer')
+                self._send(200, dict(ok=True, pid=os.getpid()))
+                threading.Thread(target=_SRV.shutdown, daemon=True).start()
+                return
             req = self._body()
             if u.path == '/api/load':
                 return self._send(200, _TWIN.load(req))
@@ -683,6 +693,11 @@ def network_addresses():
     return out
 
 
+ENGINE_VERSION = '0.3.1'
+ENGINE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+_SRV = None
+
+
 def main(argv=None):
     global _TWIN
     ap = argparse.ArgumentParser(description='Local back end of the z2labs board viewer (openEMS twin).')
@@ -700,7 +715,8 @@ def main(argv=None):
     local_only = host in ('127.0.0.1', 'localhost', '::1')
     TOKEN = a.token or (None if local_only else secrets.token_urlsafe(18))
     _TWIN = Twin(a.folder, a.threads)
-    srv = ThreadingHTTPServer((host, a.port), Handler)
+    global _SRV
+    srv = _SRV = ThreadingHTTPServer((host, a.port), Handler)
     suffix = '?token=' + TOKEN if TOKEN else ''
     url = 'http://127.0.0.1:%d/%s' % (a.port, suffix)
     print('z2twin: serving %s (engine %s%s, %d threads)' % (_TWIN.root, ks.DEFAULT_VARIANT,
