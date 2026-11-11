@@ -1535,7 +1535,7 @@ async function fldRender() {
   } catch (err) { $('fldNote').textContent = String(err.message || err); }
   finally { FLD.busy = false; wake(2); }
 }
-function fldLook(L) {                         // camera square onto the cut, around the strongest field
+function fldLook(L, oblique) {                // camera square onto the cut (or at an angle to it), around the strongest field
   const zs = layerObjs.filter((o) => o.L.type === 'copper').map((o) => (o.z0 + o.z1) / 2).sort((a, b) => b - a);
   const zc = fz(L.z);
   const c = L.ax === 'x' ? new THREE.Vector3(L.pos, L.lat, zc) : new THREE.Vector3(L.lat, L.pos, zc);
@@ -1546,7 +1546,12 @@ function fldLook(L) {                         // camera square onto the cut, aro
   const span = Math.max(2.5, gap * 7);
   FLD.viewSpan = span;
   const dist = span / (2 * Math.tan(camera.fov * Math.PI / 360));
-  controls.target.copy(cw); camera.position.copy(cw).addScaledVector(nw, -dist);
+  const dir = nw.clone().multiplyScalar(-1);
+  if (oblique) {                               // "Iso" with a cut shown: the cut from the front, a little from above and the side
+    const up = new THREE.Vector3(0, 1, 0), lat = new THREE.Vector3().crossVectors(up, nw).normalize();
+    dir.addScaledVector(up, 0.45).addScaledVector(lat, 0.6).normalize();
+  }
+  controls.target.copy(cw); camera.position.copy(cw).addScaledVector(dir, dist * (oblique ? 1.5 : 1));
   camera.updateProjectionMatrix(); controls.update(); wake(4);
 }
 function fldLayout() {                         // exploded layout / z scale changed: overlay planes follow their layer
@@ -1901,7 +1906,9 @@ $('explode').addEventListener('input', layout);
 $('zscale').addEventListener('input', layout);
 document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
   // with an E-field cut shown the board is hidden: "Cross-section" looks square onto the cut (the side view was edge-on to it)
-  if (b.dataset.view === 'side' && FLD.on && FLD.q === 'E' && FLD.look) fldLook(FLD.look); else setView(b.dataset.view);
+  // "Iso" framed the whole (hidden) board, which left the cut as a sliver seen from its edge
+  const cut = FLD.on && FLD.q === 'E' && FLD.look, v = b.dataset.view;
+  if (cut && v === 'side') fldLook(FLD.look); else if (cut && v === 'iso') fldLook(FLD.look, true); else setView(v);
 }));
 document.querySelectorAll('[data-comp]').forEach((b) => b.addEventListener('click', () => {
   compMode = b.dataset.comp;
