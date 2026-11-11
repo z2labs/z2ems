@@ -268,24 +268,6 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
       </div>
     </section>
 
-    <section class="sec" id="simSec">
-      <h2>Simulate</h2>
-      <p class="hint" id="simHint">Runs need the local twin: <code>python gui/server/z2twin_server.py &lt;board folder&gt; --open</code></p>
-      <div class="field">
-        <label for="simFab">Stackup</label><select id="simFab"></select>
-        <label for="simFmax">f max</label><select id="simFmax"><option value="3e9">3 GHz</option><option value="6e9" selected>6 GHz</option><option value="10e9">10 GHz</option><option value="20e9">20 GHz</option></select>
-        <label for="simMesh">Mesh</label><select id="simMesh"><option value="1.6">Fast (coarse)</option><option value="1" selected>Normal</option><option value="0.7">Fine</option></select>
-        <label for="simEng">Engine</label><select id="simEng"><option value="auto" selected>Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
-      </div>
-      <label class="chk"><input type="checkbox" id="simConv"><span>Mesh convergence check<small>Runs the board again with 0.6× cells and reports whether f<sub>res</sub>, delay and |S| moved (≈ 3× the time).</small></span></label>
-      <label class="chk"><input type="checkbox" id="simDisp" checked><span>Laminate dispersion<small>Djordjevic–Sarkar: flat tan δ, causal εr(f). Slower (Debye poles).</small></span></label>
-      <label class="chk"><input type="checkbox" id="simLoss" checked><span>Copper loss and roughness<small id="simLossNote">Rq from the fab stackup; standard ED foil ≈ 2 µm.</small></span></label>
-      <div class="field"><label for="simRq">Rq override</label><input type="number" id="simRq" min="0" max="10" step="0.1" placeholder="from stackup (µm)"></div>
-      <label class="chk"><input type="checkbox" id="simComp"><span>Fitted R, L, C as lumped elements<small id="simCompNote">no two-pad passives with a value</small></span></label>
-      <div class="seg"><button class="btn" id="runSim" disabled>Run simulation</button><button class="btn small" id="cancelSim" hidden>Cancel</button></div>
-      <div id="simProg" hidden><div class="prog"><i id="simBar"></i></div><p class="hint mono" id="simText"></p></div>
-    </section>
-
     <section class="sec" id="resSec" hidden>
       <h2>Result</h2>
       <div class="seg" role="group" aria-label="Plot">
@@ -331,6 +313,24 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
       <p class="hint" id="fldInfo"></p>
       <p class="hint" id="fldNote"></p>
     </section>
+    <section class="sec" id="simSec">
+      <h2>Simulate</h2>
+      <p class="hint" id="simHint">Runs need the local twin: <code>python gui/server/z2twin_server.py &lt;board folder&gt; --open</code></p>
+      <div class="field">
+        <label for="simFab">Stackup</label><select id="simFab"></select>
+        <label for="simFmax">f max</label><select id="simFmax"><option value="3e9">3 GHz</option><option value="6e9" selected>6 GHz</option><option value="10e9">10 GHz</option><option value="20e9">20 GHz</option></select>
+        <label for="simMesh">Mesh</label><select id="simMesh"><option value="1.6">Fast (coarse)</option><option value="1" selected>Normal</option><option value="0.7">Fine</option></select>
+        <label for="simEng">Engine</label><select id="simEng"><option value="auto" selected>Auto</option><option value="cuda">GPU (CUDA)</option><option value="cpu">CPU</option></select>
+      </div>
+      <label class="chk"><input type="checkbox" id="simConv"><span>Mesh convergence check<small>Runs the board again with 0.6× cells and reports whether f<sub>res</sub>, delay and |S| moved (≈ 3× the time).</small></span></label>
+      <label class="chk"><input type="checkbox" id="simDisp" checked><span>Laminate dispersion<small>Djordjevic–Sarkar: flat tan δ, causal εr(f). Slower (Debye poles).</small></span></label>
+      <label class="chk"><input type="checkbox" id="simLoss" checked><span>Copper loss and roughness<small id="simLossNote">Rq from the fab stackup; standard ED foil ≈ 2 µm.</small></span></label>
+      <div class="field"><label for="simRq">Rq override</label><input type="number" id="simRq" min="0" max="10" step="0.1" placeholder="from stackup (µm)"></div>
+      <label class="chk"><input type="checkbox" id="simComp"><span>Fitted R, L, C as lumped elements<small id="simCompNote">no two-pad passives with a value</small></span></label>
+      <div class="seg"><button class="btn" id="runSim" disabled>Run simulation</button><button class="btn small" id="cancelSim" hidden>Cancel</button></div>
+      <div id="simProg" hidden><div class="prog"><i id="simBar"></i></div><p class="hint mono" id="simText"></p></div>
+    </section>
+
     <section class="sec">
       <h2>Selection</h2>
       <dl class="info" id="info"><dt>Click</dt><dd>a layer, track, via or component</dd></dl>
@@ -933,6 +933,8 @@ function showResult(res, touch) {
   const add = (a, b) => { const dt = document.createElement('dt'); dt.textContent = a; const dd = document.createElement('dd'); dd.textContent = b; dl.append(dt, dd); };
   add('Board', res.board + ' · ' + res.stackup);
   const m = res.materials || {};
+  $('simDisp').checked = m.dispersion === 'debye'; $('simLoss').checked = m.conductor === 'loss';
+  $('simRq').value = m.roughness_um != null ? m.roughness_um : ''; if (!$('simComp').disabled) $('simComp').checked = !!m.components;
   add('Model', [m.dispersion === 'debye' ? 'DS laminate' : 'constant εr', m.conductor === 'loss' ? 'lossy copper' + (m.roughness_um != null ? ` Rq ${m.roughness_um} µm` : '') : 'PEC copper',
                 (res.components || []).length ? `${res.components.length} lumped parts` : null].filter(Boolean).join(' · '));
   add('Mesh', `${res.mesh.join(' × ')} (${res.mcells.toFixed(2)} MCells)`);
@@ -1353,7 +1355,7 @@ function fldCut(d) {
     const v = (ix, iy) => { const b = (((iz * ny + iy) * nx + ix) * 6) + comp * 2; return FLD.mode === 'peak' ? Math.hypot(A[b], A[b + 1]) : A[b] * c - A[b + 1] * s; };
     return ax === 'x' ? v(k0, il) * (1 - w) + v(k0 + 1, il) * w : v(il, k0) * (1 - w) + v(il, k0 + 1) * w;
   };
-  if (FLD.autoCut && FLD.mode !== 'peak' && !FLD.play) {   // first look at a cut: the instant of the strongest field
+  if (FLD.autoCut) {                           // first look at a cut: square onto it, at the instant of the strongest field
     let sr = 0, si = 0, best = 0, bl = 0, bz = 0;
     const cu0 = ax === 'x' ? 1 : 0;
     for (let iz = 0; iz < nz; iz++) for (let il = 0; il < nl; il++) for (const comp of [cu0, 2]) {
@@ -1362,8 +1364,8 @@ function fldCut(d) {
       sr += re * re - im * im; si += 2 * re * im;
       const m = Math.hypot(re, im); if (m > best) { best = m; bl = lat[il]; bz = Z[iz]; }
     }
-    FLD.phase = ((-Math.atan2(si, sr) / 2) * 180 / Math.PI + 360) % 360; $('fldPh').value = FLD.phase; $('fldPhV').textContent = FLD.phase.toFixed(0) + '°';
-    FLD.autoCut = false; FLD.lookAt = { pos, lat: bl, z: bz, ax };
+    if (FLD.mode !== 'peak' && !FLD.play) { FLD.phase = ((-Math.atan2(si, sr) / 2) * 180 / Math.PI + 360) % 360; $('fldPh').value = FLD.phase; $('fldPhV').textContent = FLD.phase.toFixed(0) + '°'; }
+    FLD.autoCut = false; FLD.lookAt = FLD.look = { pos, lat: bl, z: bz, ax };
   }
   const c2 = Math.cos(FLD.phase * Math.PI / 180), s2 = Math.sin(FLD.phase * Math.PI / 180);
   const at2 = (iz, il, comp) => {
@@ -1897,7 +1899,10 @@ function setView(v) {
 // ---------------------------------------------------------------- UI wiring
 $('explode').addEventListener('input', layout);
 $('zscale').addEventListener('input', layout);
-document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
+  // with an E-field cut shown the board is hidden: "Cross-section" looks square onto the cut (the side view was edge-on to it)
+  if (b.dataset.view === 'side' && FLD.on && FLD.q === 'E' && FLD.look) fldLook(FLD.look); else setView(b.dataset.view);
+}));
 document.querySelectorAll('[data-comp]').forEach((b) => b.addEventListener('click', () => {
   compMode = b.dataset.comp;
   document.querySelectorAll('[data-comp]').forEach((x) => x.classList.toggle('on', x === b));

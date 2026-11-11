@@ -96,7 +96,7 @@ class Job:
         self.req, self.out = req, out
         self.state, self.error, self.result = 'queued', None, None
         self.log = []
-        self.progress = dict(exc=0, n=len(req.get('ports', [])), timestep=0, energy_db=0.0, mcells_s=None)
+        self.progress = dict(exc=0, n=len(req.get('ports', [])), timestep=0, energy_db=0.0, mcells_s=None, stage='building the model')
         self.cancel = False
         self.t0 = time.time()
         self.touchstone = None
@@ -413,14 +413,19 @@ class Twin:
 
             def log(m):
                 job.log.append(time.strftime('%H:%M:%S ') + m)
+                if m.lstrip().startswith('fields:') or 'rc=' in m:
+                    job.progress['stage'] = 'post-processing'
 
             def progress(e, n, line):
                 if job.cancel:
                     raise Cancelled()
+                if job.progress.get('exc') != e:      # a new excitation starts from zero (the bar showed the last one's 100 %)
+                    job.progress.update(timestep=0, energy_db=0.0, frac=0.0, mcells_s=None, max_ts=0, stage='engine setup')
                 job.progress['exc'], job.progress['n'] = e, n
                 m = ENERGY.search(line)
                 if m:
-                    job.progress.update(timestep=int(m.group(1)), mcells_s=float(m.group(2)), energy_db=-float(m.group(4)))
+                    job.progress.update(timestep=int(m.group(1)), mcells_s=float(m.group(2)), energy_db=-float(m.group(4)),
+                                        stage='time stepping')
                     mx = job.progress.get('max_ts') or 0
                     # done when the energy is down to the end criterion (-40 dB) or the time limit is reached
                     job.progress['frac'] = round(max(min(1.0, job.progress['energy_db'] / -40.0),
@@ -693,7 +698,26 @@ def network_addresses():
     return out
 
 
-ENGINE_VERSION = '0.3.1'
+ENGINE_VERSION = '0.3.2'
+
+
+class Server(ThreadingHTTPServer):
+    # http.server sets SO_REUSEADDR, and on Windows that lets a second server bind a port that is
+    # already served: two servers answered on 8765 after a double click (2026-11-11). One port, one server.
+    allow_reuse_address = os.name != 'nt'
+    daemon_threads = True
+
+    def server_bind(self):
+        if os.name == 'nt':
+            import socket
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return                                  # the browser or the plugin closed the connection: not an error
+        super().handle_error(request, client_address)
 ENGINE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 _SRV = None
 
@@ -716,7 +740,11 @@ def main(argv=None):
     TOKEN = a.token or (None if local_only else secrets.token_urlsafe(18))
     _TWIN = Twin(a.folder, a.threads)
     global _SRV
-    srv = _SRV = ThreadingHTTPServer((host, a.port), Handler)
+    try:
+        srv = _SRV = Server((host, a.port), Handler)
+    except OSError as e:
+        print('z2twin: port %d is in use (%s): another server is already there' % (a.port, e), flush=True)
+        return 2
     suffix = '?token=' + TOKEN if TOKEN else ''
     url = 'http://127.0.0.1:%d/%s' % (a.port, suffix)
     print('z2twin: serving %s (engine %s%s, %d threads)' % (_TWIN.root, ks.DEFAULT_VARIANT,
