@@ -110,7 +110,8 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 :root { --sch-bg: #f5f4ef; --sch-wire: #008400; --sch-body: #840000; --sch-fill: #ffffc2; --sch-text: #1a1a1a; --sch-label: #0c4f8a; --sch-sheet: #8a5a00; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --sch-bg: #14191a; --sch-wire: #3fbf4f; --sch-body: #d46a6a; --sch-fill: #2a2a1c; --sch-text: #dfe6e2; --sch-label: #6fb3ef; --sch-sheet: #d9a441; } }
 :root[data-theme="dark"] { --sch-bg: #14191a; --sch-wire: #3fbf4f; --sch-body: #d46a6a; --sch-fill: #2a2a1c; --sch-text: #dfe6e2; --sch-label: #6fb3ef; --sch-sheet: #d9a441; }
-.schpane { position: absolute; inset: 0; background: var(--sch-bg); display: flex; flex-direction: column; }
+.hud { z-index: 3; }
+.schpane { position: absolute; inset: 0; z-index: 2; background: var(--sch-bg); display: flex; flex-direction: column; }
 .schbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 44px 16px 8px; }
 .schbar select, .schbar input { font: 12px var(--font-data); color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; min-width: 0; }
 .schbar input { width: 150px; }
@@ -172,6 +173,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
     </div>
     <div class="schpane" id="schpane" hidden>
       <div class="schbar">
+        <button class="btn small" id="schBack" title="Back to the 3D view of the board">◀ 3D view</button>
         <button class="btn small" id="schUp" title="Parent sheet">Up</button>
         <select id="schSheet" aria-label="Sheet"></select>
         <button class="btn small" id="schFit">Fit</button>
@@ -2350,6 +2352,8 @@ function setMode(m) {
   wake();
 }
 $('mode3d').addEventListener('click', () => setMode('3d'));
+$('schBack').addEventListener('click', () => setMode('3d'));   // the 3D/Schematic switch is under the schematic pane
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && schMode === 'sch' && !cohMarking) setMode('3d'); });
 $('modeSch').addEventListener('click', () => { if (SCH) setMode('sch'); });
 $('schSheet').addEventListener('change', () => { schDrawSheet(+$('schSheet').value); schFit(); });
 $('schFit').addEventListener('click', schFit);

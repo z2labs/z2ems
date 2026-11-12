@@ -698,7 +698,7 @@ def network_addresses():
     return out
 
 
-ENGINE_VERSION = '0.3.3'
+ENGINE_VERSION = '0.3.4'
 
 
 class Server(ThreadingHTTPServer):

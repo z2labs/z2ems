@@ -71,7 +71,7 @@ python kicad_sim.py ../examples/coupon_msl50.kicad_pcb --port J1 --port J2 --fma
 python kicad_sim.py ../examples/coupon_msl50.kicad_pcb --port J1 --port J2 --fmax 6e9 --variant cuda
 ```
 
-Expected: Z0 ≈ 49.5 Ω, εeff ≈ 3.35, |S11| below −28 dB up to 6 GHz. `twin/README.md` has the options, the
+Expected: Z0 ≈ 49.5 Ω, εeff ≈ 3.35, |S11| about −28 dB or lower up to 6 GHz (−27.9 dB on the Windows CPU reference run). `twin/README.md` has the options, the
 model rules, the environment switches and the validation cases.
 
 ## Relation to openEMS
